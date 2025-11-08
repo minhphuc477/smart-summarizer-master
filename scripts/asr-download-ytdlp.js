@@ -2,10 +2,14 @@
 // ASR Audio Download Script with yt-dlp (recommended for reliability)
 // Usage: node scripts/asr-download-ytdlp.js <youtube-url>
 
-const { exec, execSync } = require('child_process');
-const { promisify } = require('util');
-const fs = require('fs');
-const path = require('path');
+import { exec, execSync } from 'child_process';
+import { promisify } from 'util';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const execAsync = promisify(exec);
 

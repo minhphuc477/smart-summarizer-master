@@ -1,9 +1,12 @@
 // Simple ASR prototype: stream audio with ytdl-core and optionally convert to WAV using ffmpeg
 // Usage: node scripts/prototype-asr-simple.js <youtube-url>
-const fs = require('fs');
-const path = require('path');
-const child_process = require('child_process');
-const ytdl = require('ytdl-core');
+import fs from 'fs';
+import path from 'path';
+import child_process from 'child_process';
+import ytdl from 'ytdl-core';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 async function run() {
   const url = process.argv[2];

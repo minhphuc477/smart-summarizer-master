@@ -2,9 +2,14 @@
 // Usage: node scripts/prototype-asr.js <youtube-url>
 // Requirements: node, npm deps (ytdl-core), ffmpeg available on PATH
 
-const fs = require('fs');
-const path = require('path');
-const child_process = require('child_process');
+import fs from 'fs';
+import path from 'path';
+import child_process from 'child_process';
+import ytdl from 'ytdl-core';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 async function run() {
   const url = process.argv[2];
@@ -15,8 +20,6 @@ async function run() {
 
   const outDir = path.resolve(__dirname, '..', 'asr-output');
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
-
-  const ytdl = require('ytdl-core');
 
   try {
     console.log('Fetching video info...');

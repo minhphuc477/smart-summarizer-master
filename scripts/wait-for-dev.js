@@ -1,5 +1,5 @@
 // Poll http://localhost:3000 until it responds or timeout
-const http = require('http');
+import http from 'http';
 const url = process.env.BASE_URL || 'http://localhost:3000';
 const timeout = 60000;
 const interval = 1500;

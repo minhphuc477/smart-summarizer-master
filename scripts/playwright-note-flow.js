@@ -2,9 +2,13 @@
 // Saves console logs to playwright-console.log and network requests to playwright-requests.json
 // Usage: node scripts/playwright-note-flow.js
 
-const fs = require('fs');
-const path = require('path');
-const { chromium } = require('playwright');
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { chromium } from 'playwright';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 (async () => {
   const outDir = path.resolve(__dirname, '..', 'playwright-logs');
