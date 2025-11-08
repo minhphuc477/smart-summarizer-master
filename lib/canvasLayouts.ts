@@ -16,6 +16,46 @@ interface LayoutOptions {
   nodeSpacing?: number;
   levelSpacing?: number;
   iterations?: number;
+  avoidCollisions?: boolean;
+}
+
+// Helper: push overlapping nodes apart to reduce collisions
+function resolveCollisions(nodes: Node[], minDist: number, maxPasses = 3) {
+  if (nodes.length <= 1) return;
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let moved = false;
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i];
+        const b = nodes[j];
+        const dx = b.position.x - a.position.x;
+        const dy = b.position.y - a.position.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.0001;
+        if (dist < minDist) {
+          const overlap = (minDist - dist) / 2;
+          const ux = dx / dist;
+          const uy = dy / dist;
+          a.position.x -= ux * overlap;
+          a.position.y -= uy * overlap;
+          b.position.x += ux * overlap;
+          b.position.y += uy * overlap;
+          moved = true;
+        }
+      }
+    }
+    if (!moved) break;
+  }
+}
+
+// Helper: translate all nodes so the minimum x/y start at small positive padding
+function normalizeAndPad(nodes: Node[], pad = 50) {
+  if (nodes.length === 0) return;
+  const minX = Math.min(...nodes.map(n => n.position.x));
+  const minY = Math.min(...nodes.map(n => n.position.y));
+  nodes.forEach(n => {
+    n.position.x = n.position.x - minX + pad;
+    n.position.y = n.position.y - minY + pad;
+  });
 }
 
 /**
@@ -27,7 +67,7 @@ export function applyTreeLayout(
   edges: Edge[],
   options: LayoutOptions = {}
 ): Node[] {
-  const { nodeSpacing = 250, levelSpacing = 150 } = options;
+  const { nodeSpacing = 250, levelSpacing = 150, avoidCollisions = true } = options;
 
   // Build adjacency list
   const children = new Map<string, string[]>();
@@ -98,6 +138,10 @@ export function applyTreeLayout(
     }
   });
 
+  if (avoidCollisions) {
+    resolveCollisions(nodes, Math.min(nodeSpacing * 0.9, 240));
+  }
+  normalizeAndPad(nodes, 60);
   return nodes;
 }
 
@@ -110,7 +154,7 @@ export function applyForceLayout(
   edges: Edge[],
   options: LayoutOptions = {}
 ): Node[] {
-  const { iterations = 100, nodeSpacing: _nodeSpacing = 200 } = options;
+  const { iterations = 100, nodeSpacing: _nodeSpacing = 200, avoidCollisions = true } = options;
   
   // Initialize random positions if not set
   nodes.forEach((node) => {
@@ -189,13 +233,10 @@ export function applyForceLayout(
     });
   }
 
-  // Center the graph
-  const minX = Math.min(...nodes.map(n => n.position.x));
-  const minY = Math.min(...nodes.map(n => n.position.y));
-  nodes.forEach(node => {
-    node.position.x -= minX - 50;
-    node.position.y -= minY - 50;
-  });
+  if (avoidCollisions) {
+    resolveCollisions(nodes, Math.min(_nodeSpacing * 0.9, 180));
+  }
+  normalizeAndPad(nodes, 60);
 
   return nodes;
 }
@@ -209,7 +250,7 @@ export function applyGridLayout(
   _edges: Edge[],
   options: LayoutOptions = {}
 ): Node[] {
-  const { nodeSpacing = 200 } = options;
+  const { nodeSpacing = 200, avoidCollisions = true } = options;
   
   const cols = Math.ceil(Math.sqrt(nodes.length));
   
@@ -223,6 +264,10 @@ export function applyGridLayout(
     };
   });
 
+  if (avoidCollisions) {
+    resolveCollisions(nodes, Math.min(nodeSpacing * 0.9, 180));
+  }
+  normalizeAndPad(nodes, 60);
   return nodes;
 }
 
@@ -235,7 +280,7 @@ export function applyCircularLayout(
   _edges: Edge[],
   options: LayoutOptions = {}
 ): Node[] {
-  const { nodeSpacing = 300 } = options;
+  const { nodeSpacing = 300, avoidCollisions = true } = options;
   const radius = (nodes.length * nodeSpacing) / (2 * Math.PI);
   const centerX = radius + 100;
   const centerY = radius + 100;
@@ -248,6 +293,10 @@ export function applyCircularLayout(
     };
   });
 
+  if (avoidCollisions) {
+    resolveCollisions(nodes, Math.min(nodeSpacing * 0.5, 200));
+  }
+  normalizeAndPad(nodes, 60);
   return nodes;
 }
 
@@ -260,7 +309,7 @@ export function applyHierarchicalLayout(
   edges: Edge[],
   options: LayoutOptions = {}
 ): Node[] {
-  const { nodeSpacing = 250, levelSpacing = 150 } = options;
+  const { nodeSpacing = 250, levelSpacing = 150, avoidCollisions = true } = options;
 
   // Build adjacency lists
   const outgoing = new Map<string, string[]>();
@@ -334,6 +383,10 @@ export function applyHierarchicalLayout(
     });
   });
 
+  if (avoidCollisions) {
+    resolveCollisions(nodes, Math.min(nodeSpacing * 0.9, 220));
+  }
+  normalizeAndPad(nodes, 60);
   return nodes;
 }
 

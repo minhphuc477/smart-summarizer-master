@@ -57,6 +57,9 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
   // Advanced filters & dialog state
   const [filters, setFilters] = useState<SearchFilters>({ restrictToFolder: true });
   const [showFilters, setShowFilters] = useState(false);
+  // Keep a ref of the most-recently applied filters so rapid Apply->Search (in tests/UI)
+  // uses the intended values even if React state update hasn't flushed yet.
+  const lastAppliedFiltersRef = useRef<SearchFilters>(filters);
 
   // Saved searches (server-backed)
   type SavedSearch = { id: number; name: string; query: string; filters?: SearchFilters | null };
@@ -75,7 +78,10 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
     setError(null);
     setHasSearched(true);
     try {
-      const restrictFolder = filters.restrictToFolder ?? true;
+      // Prefer the most recently applied filters stored in the ref (keeps tests stable
+      // when Apply is clicked immediately before Search). Fall back to state value.
+      const usedFilters = lastAppliedFiltersRef.current || filters;
+      const restrictFolder = usedFilters.restrictToFolder ?? true;
       const effectiveFolderId = restrictFolder ? folderId : null;
       const response = await fetch('/api/search', {
         method: 'POST',
@@ -88,10 +94,10 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
           // Use current threshold so server filters early
           matchThreshold: Math.max(0.5, Math.min(0.99, minSimilarity)),
           filters: {
-            dateFrom: filters.dateFrom || undefined,
-            dateTo: filters.dateTo || undefined,
-            sentiment: filters.sentiment && filters.sentiment !== 'any' ? filters.sentiment : undefined,
-            tags: (filters.tags || []).length ? filters.tags : undefined,
+            dateFrom: usedFilters.dateFrom || undefined,
+            dateTo: usedFilters.dateTo || undefined,
+            sentiment: usedFilters.sentiment && usedFilters.sentiment !== 'any' ? usedFilters.sentiment : undefined,
+            tags: (usedFilters.tags || []).length ? usedFilters.tags : undefined,
           }
         })
       });
@@ -183,6 +189,11 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
     })();
     return () => { canceled = true; };
   }, [userId]);
+
+  // Keep the ref in sync whenever filters state changes (covers non-immediate updates)
+  useEffect(() => {
+    lastAppliedFiltersRef.current = filters;
+  }, [filters]);
 
   const saveCurrentSearch = async () => {
     if (!searchQuery.trim()) {
@@ -628,7 +639,16 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
           )}
         </div>
       )}
-    <AdvancedSearchDialog open={showFilters} onOpenChange={setShowFilters} value={filters} onChange={setFilters} />
+    <AdvancedSearchDialog
+      open={showFilters}
+      onOpenChange={setShowFilters}
+      value={filters}
+      onChange={(v) => {
+        // Update state and immediate ref to avoid races between Apply and Search submit
+        lastAppliedFiltersRef.current = v;
+        setFilters(v);
+      }}
+    />
     </div>
     </TooltipProvider>
   );

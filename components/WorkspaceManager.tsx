@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import useAsyncAction from '@/lib/useAsyncAction';
 import { toast } from 'sonner';
 import { Button } from "@/components/ui/button";
 import {
@@ -17,7 +18,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -43,11 +43,39 @@ function WorkspaceManager({
   selectedWorkspaceId, 
   onWorkspaceChange 
 }: WorkspaceManagerProps) {
+
+  const getRoleIcon = (role?: 'owner' | 'admin' | 'member') => {
+    if (role === 'owner') return <Crown className="h-4 w-4 text-yellow-500" />;
+    if (role === 'admin') return <Shield className="h-4 w-4 text-blue-500" />;
+    if (role === 'member') return <Users className="h-4 w-4" />;
+    return null;
+  };
+
+  // State & derived data
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [loading, setLoading] = useState(true);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newWorkspace, setNewWorkspace] = useState({ name: '', description: '' });
   const [error, setError] = useState<string | null>(null);
+  const selected = useMemo(() => workspaces.find(w => w.id === selectedWorkspaceId) || null, [workspaces, selectedWorkspaceId]);
+
+  // After changing selection, scroll the info panel into view for quick confirmation
+  useEffect(() => {
+    if (selectedWorkspaceId) {
+      const el = document.getElementById('current-workspace-info');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+  }, [selectedWorkspaceId]);
+
+  // Determine whether we should render the static "personal" option.
+  // If the backend already returns a workspace named like the personal workspace,
+  // don't render the duplicate static item.
+  const showPersonalItem = !workspaces.some(w => {
+    const name = (w.name || '').toLowerCase();
+    return name.includes('personal') || name.includes('personal (private)');
+  });
 
   // Fetch workspaces
   const fetchWorkspaces = async () => {
@@ -79,32 +107,46 @@ function WorkspaceManager({
   }, []);
 
   // Create workspace
+  const { run: runCreate, isRunning: creating } = useAsyncAction();
   const handleCreate = async () => {
     if (!newWorkspace.name.trim()) {
       setError('Workspace name is required');
       return;
     }
-
-    try {
+    // Client-side duplicate pre-check (case-insensitive)
+    const exists = workspaces.some(w => w.name.toLowerCase() === newWorkspace.name.trim().toLowerCase());
+    if (exists) {
+      setError('You already have a workspace with this name');
+      toast.error('Duplicate workspace name');
+      return;
+    }
+    await runCreate(async () => {
       const response = await fetch('/api/workspaces', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newWorkspace),
       });
 
-      if (!response.ok) throw new Error('Failed to create workspace');
+      if (!response.ok) {
+        if (response.status === 409) {
+          const data = await response.json();
+          setError(data.error || 'Duplicate workspace name');
+          toast.error(data.error || 'Duplicate workspace name');
+          return;
+        }
+        throw new Error('Failed to create workspace');
+      }
 
       const data = await response.json();
-      setWorkspaces([...workspaces, { ...data.workspace, member_count: 1, note_count: 0, folder_count: 0 }]);
+      const created = { ...data.workspace, member_count: 1, note_count: 0, folder_count: 0 };
+      setWorkspaces([...workspaces, created]);
       setNewWorkspace({ name: '', description: '' });
       setCreateDialogOpen(false);
       setError(null);
       toast.success('Workspace created');
-    } catch (err) {
-      console.error('Error creating workspace:', err);
-      setError('Failed to create workspace');
-      toast.error('Failed to create workspace');
-    }
+      // Select newly created workspace immediately
+      onWorkspaceChange(created.id);
+    });
   };
 
   // Delete workspace
@@ -151,22 +193,37 @@ function WorkspaceManager({
           value={selectedWorkspaceId || 'personal'}
           onValueChange={(value) => onWorkspaceChange(value === 'personal' ? null : value)}
         >
-          <SelectTrigger className="w-full">
-            <SelectValue placeholder="Select workspace" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="personal">
+          <SelectTrigger className="w-full" aria-label="Workspace selector">
+            {selectedWorkspaceId ? (
+              <div className="flex items-center gap-2">
+                {getRoleIcon(selected?.role)}
+                <span>{selected?.name || 'Workspace'}</span>
+                {!!selected?.member_count && (
+                  <span className="text-xs text-muted-foreground">
+                    ({selected?.member_count} members)
+                  </span>
+                )}
+              </div>
+            ) : (
               <div className="flex items-center gap-2">
                 <span>📁</span>
                 <span>Personal (Private)</span>
               </div>
-            </SelectItem>
+            )}
+          </SelectTrigger>
+          <SelectContent>
+            {showPersonalItem && (
+              <SelectItem value="personal">
+                <div className="flex items-center gap-2">
+                  <span>📁</span>
+                  <span>Personal (Private)</span>
+                </div>
+              </SelectItem>
+            )}
             {workspaces.map((workspace, idx) => (
               <SelectItem key={`${workspace.id || 'ws'}-${idx}`} value={workspace.id}>
                 <div className="flex items-center gap-2">
-                  {workspace.role === 'owner' && <Crown className="h-4 w-4 text-yellow-500" />}
-                  {workspace.role === 'admin' && <Shield className="h-4 w-4 text-blue-500" />}
-                  {workspace.role === 'member' && <Users className="h-4 w-4" />}
+                  {getRoleIcon(workspace.role)}
                   <span>{workspace.name}</span>
                   <span className="text-xs text-muted-foreground">
                     ({workspace.member_count} members)
@@ -218,7 +275,7 @@ function WorkspaceManager({
               <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button onClick={handleCreate}>Create</Button>
+              <Button onClick={handleCreate} disabled={creating}>{creating ? 'Creating...' : 'Create'}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -236,41 +293,35 @@ function WorkspaceManager({
 
       {/* Current Workspace Info */}
       {selectedWorkspaceId && (
-        <div className="p-4 bg-gradient-to-br from-primary/5 to-primary/10 rounded-lg border border-primary/20">
-          {workspaces.find(w => w.id === selectedWorkspaceId) && (
+        <div id="current-workspace-info" className="p-4 bg-gradient-to-br from-primary/5 to-primary/10 rounded-lg border border-primary/20">
+          {selected && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  {workspaces.find(w => w.id === selectedWorkspaceId)?.role === 'owner' && (
-                    <Crown className="h-5 w-5 text-yellow-500" />
-                  )}
-                  {workspaces.find(w => w.id === selectedWorkspaceId)?.role === 'admin' && (
-                    <Shield className="h-5 w-5 text-blue-500" />
-                  )}
-                  {workspaces.find(w => w.id === selectedWorkspaceId)?.role === 'member' && (
-                    <User className="h-5 w-5 text-gray-500" />
-                  )}
+                  {selected.role === 'owner' && (<Crown className="h-5 w-5 text-yellow-500" />)}
+                  {selected.role === 'admin' && (<Shield className="h-5 w-5 text-blue-500" />)}
+                  {selected.role === 'member' && (<User className="h-5 w-5 text-gray-500" />)}
                   <h3 className="font-semibold text-foreground">
-                    {workspaces.find(w => w.id === selectedWorkspaceId)?.name}
+                    {selected.name}
                   </h3>
                 </div>
                 <span className="text-xs bg-primary text-primary-foreground px-2 py-1 rounded-full font-medium uppercase">
-                  {workspaces.find(w => w.id === selectedWorkspaceId)?.role}
+                  {selected.role}
                 </span>
               </div>
               <p className="text-sm text-muted-foreground">
-                {workspaces.find(w => w.id === selectedWorkspaceId)?.description || 'No description'}
+                {selected.description || 'No description'}
               </p>
               <div className="flex gap-4 text-xs font-medium">
                 <span className="flex items-center gap-1">
                   <Users className="h-3 w-3" />
-                  {workspaces.find(w => w.id === selectedWorkspaceId)?.member_count} members
+                  {selected.member_count} members
                 </span>
                 <span className="flex items-center gap-1">
-                  📝 {workspaces.find(w => w.id === selectedWorkspaceId)?.note_count} notes
+                  📝 {selected.note_count} notes
                 </span>
                 <span className="flex items-center gap-1">
-                  📁 {workspaces.find(w => w.id === selectedWorkspaceId)?.folder_count} folders
+                  📁 {selected.folder_count} folders
                 </span>
               </div>
             </div>
@@ -349,6 +400,11 @@ function WorkspaceSettings({
     // fetchMembers is defined within the component and doesn't change reference
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Async guards for member actions
+  const { run: runInvite, isRunning: inviting } = useAsyncAction();
+  const { run: runRemoveMember, isRunning: removing } = useAsyncAction();
+  const { run: runDelete, isRunning: deleting } = useAsyncAction();
 
   const handleInvite = async () => {
     if (!inviteEmail.trim()) return;
@@ -449,9 +505,9 @@ function WorkspaceSettings({
                     placeholder="Enter email to invite"
                     value={inviteEmail}
                     onChange={(e) => setInviteEmail(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleInvite()}
+                    onKeyDown={(e) => e.key === 'Enter' && runInvite(() => handleInvite())}
                   />
-                  <Button onClick={handleInvite}>
+                  <Button onClick={() => runInvite(() => handleInvite())} disabled={inviting}>
                     <UserPlus className="h-4 w-4 mr-2" />
                     Invite
                   </Button>
@@ -487,11 +543,12 @@ function WorkspaceSettings({
                     </div>
                     {isOwnerOrAdmin && member.role !== 'owner' && (
                       <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleRemoveMember(member.user_id)}
-                        className="text-destructive hover:text-destructive"
-                      >
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => runRemoveMember(() => handleRemoveMember(member.user_id))}
+                                disabled={removing}
+                                className="text-destructive hover:text-destructive"
+                              >
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     )}
@@ -538,7 +595,7 @@ function WorkspaceSettings({
           {/* Settings Tab */}
           {activeTab === 'settings' && workspace?.role === 'owner' && (
             <div className="space-y-4">
-              <Button variant="destructive" onClick={onDelete}>
+              <Button variant="destructive" onClick={() => runDelete(async () => { await Promise.resolve(onDelete()); })} disabled={deleting}>
                 <Trash2 className="h-4 w-4 mr-2" />
                 Delete Workspace
               </Button>

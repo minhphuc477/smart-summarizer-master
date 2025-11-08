@@ -135,6 +135,76 @@ npm run test:coverage       # Coverage report
 
 See [Testing and Logging Guide](./docs/implementation/TESTING_AND_LOGGING_IMPLEMENTATION.md) for testing guidelines.
 
+### YouTube summaries: transcript-first with metadata fallback
+
+When summarizing YouTube URLs, the app tries, in order:
+
+1) Captions transcript (best results)
+2) oEmbed metadata (title/author)
+3) Public video page description (og:description)
+
+If transcripts aren’t available, we still produce a best-effort summary from metadata+description and annotate the response with a header so the UI can inform users:
+
+- `x-content-source: youtube-transcript | youtube-metadata | webpage`
+
+Tips for better results:
+- Prefer videos with captions enabled
+- Provide your own transcript if possible
+
+The summarize-url API sets the header above; the UI displays a small banner when the metadata-only fallback is used.
+
+### Embeddings & Diagnostics
+
+All semantic search embeddings use a **centrally configured** local Transformers.js model (`Xenova/all-MiniLM-L6-v2`) with dimension **384**. Configuration is in `lib/embeddingsConfig.ts` to ensure consistency across:
+- `/api/generate-embedding` (async embedding generation)
+- `/api/search` (semantic search with fallback phases)
+- `/api/admin/backfill-embeddings` (bulk re-index)
+
+To avoid mismatches against legacy 1536-d vectors, we added:
+
+- **Central config** (`lib/embeddingsConfig.ts`) exporting `EMBEDDING_MODEL` and `EMBEDDING_DIMENSION`
+- **Diagnostic endpoint**: `GET /api/embedding/diagnose` returns database vector length and guidance if mismatched
+- **Metrics endpoint**: `GET /api/embedding/metrics` aggregates per-model latency (avg, min/max, p50/p95/p99) and job status counts
+- **Backfill endpoint**: `POST /api/admin/backfill-embeddings` (self-service; omit `user_id` to default to current user)
+
+**Backfill missing embeddings** for your account:
+```bash
+curl -X POST http://localhost:3000/api/admin/backfill-embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"limit":100}'
+```
+Add `"dryRun": true` first to preview which notes would be processed.
+
+**Embedding Metrics Dashboard** (`/analytics` or embedded component):
+- Real-time stats: total embeddings, avg/P95/P99 latency
+- Job status breakdown (pending, processing, completed, failed)
+- Manual refresh button and auto-refresh every 30s
+- Integrated backfill controls with dry-run preview
+
+### Analyze Feature (Planned)
+
+> **Status:** Planned (not yet implemented)
+
+An upcoming "Analyze" workflow will enable **multi-document thematic synthesis**:
+- Select multiple notes for cross-note analysis
+- AI-powered clustering and theme extraction
+- Consolidated takeaways across documents
+- Visual theme graph with note relationships
+
+**Tracking stub** in codebase:
+```typescript
+// TODO(analyze): Implement multi-note synthesis pipeline
+// Proposed steps:
+//   1. Fetch selected note IDs
+//   2. Batch embed (if missing embeddings)
+//   3. Cluster via k-means or hierarchical clustering
+//   4. LLM summarization per cluster
+//   5. Global synthesis across clusters
+//   6. Render theme graph + takeaways panel
+```
+
+Until implemented, references to an "Analyze" button or route are **placeholders** for this planned feature.
+
 ## 📦 Deployment
 
 See [Deployment Guide](./docs/guides/DEPLOYMENT.md) for detailed deployment instructions.

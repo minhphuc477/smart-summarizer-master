@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getServerSupabase } from '@/lib/supabaseServer';
 import { pipeline, FeatureExtractionPipeline } from '@xenova/transformers';
+import { EMBEDDING_MODEL, EMBEDDING_DIMENSION } from '@/lib/embeddingsConfig';
 import { createRequestLogger } from '@/lib/logger';
 import { respondError } from '@/lib/apiErrors';
 
@@ -9,7 +10,7 @@ let embedder: FeatureExtractionPipeline | null = null;
 
 async function getEmbedder() {
   if (!embedder) {
-    embedder = (await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2')) as FeatureExtractionPipeline;
+  embedder = (await pipeline('feature-extraction', EMBEDDING_MODEL)) as FeatureExtractionPipeline;
   }
   return embedder;
 }
@@ -19,7 +20,7 @@ export async function POST(req: Request) {
   const logger = createRequestLogger(req);
   
   try {
-  const { query, userId, folderId, matchCount = 5, matchThreshold = 0.78, filters } = await req.json();
+    const { query, userId, folderId, matchCount = 5, matchThreshold = 0.78, filters } = await req.json();
     
     logger.debug('Search request received', { 
       query: query?.substring(0, 50), 
@@ -34,7 +35,7 @@ export async function POST(req: Request) {
       return NextResponse.json(body, { status });
     }
 
-    // 1. Tạo embedding cho câu truy vấn bằng Transformers.js (local, free)
+  // 1. Build query embedding (local, cached model)
     const embeddingStart = Date.now();
     const pipe = await getEmbedder();
     const output = await pipe(query.trim(), {
@@ -43,11 +44,14 @@ export async function POST(req: Request) {
     });
 
     const queryEmbedding = Array.from(output.data);
+    if (queryEmbedding.length !== EMBEDDING_DIMENSION) {
+      logger.warn('Query embedding dimension mismatch', undefined, { got: queryEmbedding.length, expected: EMBEDDING_DIMENSION });
+    }
     const embeddingDuration = Date.now() - embeddingStart;
     
     logger.debug('Query embedding generated', undefined, { embeddingDuration });
 
-    // 2. Gọi RPC function trên Supabase để tìm các ghi chú tương tự
+  // 2. Primary semantic RPC call
     const searchStart = Date.now();
   const supabase = await getServerSupabase();
     const useFolderRpc = folderId !== null && folderId !== undefined;
@@ -60,17 +64,87 @@ export async function POST(req: Request) {
     };
     if (useFolderRpc) rpcArgs.filter_folder_id = folderId;
 
-  const { data, error } = await supabase.rpc(procName, rpcArgs);
-    const searchDuration = Date.now() - searchStart;
+    // Phase 1: attempt with requested threshold (slightly relaxed to avoid over-filtering)
+    const adjustedThreshold = Math.min(matchThreshold, 0.75); // cap to 0.75 (empirically most notes cluster <0.8)
+    const { data: dataPhase1, error: errorPhase1 } = await supabase.rpc(procName, { ...rpcArgs, match_threshold: adjustedThreshold });
+    let results = (dataPhase1 || []);
+  const searchDuration = Date.now() - searchStart;
 
-    if (error) {
-      logger.error("Semantic search error", error as Error, { userId, procName });
-      const { body, status } = respondError('INTERNAL', "Failed to search notes. Make sure you've run the semantic-search migration SQL.", 500);
+    if (errorPhase1) {
+      // Normalize error message without using 'any'
+      const errObj: unknown = errorPhase1;
+      const errMsg = typeof errObj === 'object' && errObj !== null && 'message' in errObj
+        ? String((errObj as { message: unknown }).message)
+        : String(errObj);
+      if (errMsg.toLowerCase().includes('dimension mismatch')) {
+        logger.error('Semantic search RPC dimension mismatch', errorPhase1 as Error, { procName });
+        const { body, status } = respondError('INTERNAL', `Semantic search failed due to dimension mismatch. Expected ${EMBEDDING_DIMENSION}. Adjust database vector column or EMBEDDING_DIMENSION constant.`, 500);
+        return NextResponse.json(body, { status });
+      }
+      logger.error("Semantic search error (phase1)", errorPhase1 as Error, { userId, procName });
+      const { body, status } = respondError('INTERNAL', "Failed to search notes. Ensure semantic-search migration SQL ran.", 500);
       return NextResponse.json(body, { status });
     }
 
-    // Results from RPC (already folder-filtered when applicable)
-    let results = (data || []);
+    // Phase 2 fallback: broaden threshold to almost zero to get top similarities even if low
+    if ((!results || results.length === 0) && adjustedThreshold > 0.01) {
+      logger.info('No semantic hits (phase1); retrying with near-zero threshold', undefined, { previousThreshold: adjustedThreshold });
+      const { data: dataPhase2, error: errorPhase2 } = await supabase.rpc(procName, { ...rpcArgs, match_threshold: 0.01, match_count: Math.max(matchCount, 8) });
+      if (!errorPhase2) {
+        results = dataPhase2 || [];
+      } else {
+        logger.warn('Phase2 semantic retry failed', undefined, { error: String(errorPhase2) });
+      }
+    }
+
+    // Phase 3 lexical fallback: if still empty, run ILIKE search on summary/original_notes
+    if ((!results || results.length === 0) && query.trim().length >= 2) {
+      logger.info('Semantic empty; performing lexical fallback');
+      try {
+        const likePattern = `%${query.trim().replace(/%/g, '')}%`;
+        const { data: lexical, error: lexErr } = await supabase
+          .from('notes')
+          .select('id, summary, original_notes, persona, created_at')
+          .ilike('summary', likePattern)
+          .limit(matchCount);
+        if (!lexErr && lexical && lexical.length > 0) {
+          // Attach pseudo similarity (0) so client can still display deterministically
+          results = lexical.map(r => ({ ...r, similarity: 0 }));
+          logger.info('Lexical fallback produced results', undefined, { count: results.length });
+        } else {
+          logger.info('Lexical fallback produced no results');
+        }
+      } catch (_lexCatch) {
+        logger.warn('Lexical fallback threw error');
+      }
+    }
+  // Normalize similarity range if needed (ensure number)
+  type RawResult = { id: number; summary?: string; original_notes?: string; persona?: string; created_at?: string; similarity?: number };
+  results = (results as RawResult[]).map((r: RawResult) => ({ ...r, similarity: typeof r.similarity === 'number' ? r.similarity : 0 }));
+
+    // Optional backfill: trigger embeddings for notes missing embeddings in the background
+    if (userId) {
+      try {
+        const { data: missing } = await supabase
+          .from('notes')
+          .select('id')
+          .eq('user_id', userId)
+          .is('embedding', null)
+          .limit(10);
+        if (missing && missing.length > 0) {
+          missing.forEach(({ id }) => {
+            fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ''}/api/generate-embedding`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ noteId: id }),
+            }).catch(() => {});
+          });
+          logger.info('Triggered embedding backfill for missing notes', undefined, { count: missing.length });
+        }
+      } catch (_err) {
+        logger.warn('Failed to trigger embedding backfill');
+      }
+    }
 
     // Apply advanced filters if provided
     const f = filters || {};
@@ -96,7 +170,7 @@ export async function POST(req: Request) {
       results = results.filter((r: { sentiment?: string | null }) => (r.sentiment || null) === sentiment);
     }
 
-    // Tag filtering (ANY match) — requires an additional lookup
+  // Tag filtering (ANY match) — requires an additional lookup
     if (tags.length > 0 && results.length > 0) {
       const ids = results.map((r: { id: number }) => r.id);
       const { data: noteTags, error: tagErr } = await supabase
@@ -129,7 +203,11 @@ export async function POST(req: Request) {
       resultsCount: results?.length || 0,
       embeddingDuration,
       searchDuration,
-      totalDuration
+      totalDuration,
+      phases: {
+        phase1Threshold: adjustedThreshold,
+        usedLexicalFallback: (!results || results.length === 0) ? true : false
+      }
     });
     
     logger.logResponse('POST', '/api/search', 200, totalDuration, { userId });

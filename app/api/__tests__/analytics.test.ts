@@ -1,5 +1,3 @@
-import { GET, POST } from '@/app/api/analytics/route';
-
 // Use the auto-mock from __mocks__/supabaseServer.ts
 jest.mock('@/lib/supabaseServer');
 
@@ -30,13 +28,103 @@ jest.mock('@/lib/supabase', () => {
 });
 
 describe('/api/analytics', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    
+    const { getServerSupabase } = require('@/lib/supabaseServer');
+    getServerSupabase.mockResolvedValue({
+      auth: { 
+        getUser: jest.fn(async () => ({ 
+          data: { user: { id: 'user-1' } }, 
+          error: null 
+        })) 
+      },
+      from: jest.fn((table: string) => {
+        if (table === 'user_analytics') {
+          return {
+            select: () => ({
+              eq: () => ({
+                gte: () => ({
+                  order: () => ({ 
+                    data: [{ date: '2025-01-01', notes_created: 5 }], 
+                    error: null 
+                  })
+                })
+              })
+            })
+          } as any;
+        }
+        if (table === 'usage_events') {
+          return {
+            select: () => ({
+              eq: () => ({
+                order: () => ({
+                  limit: () => ({ 
+                    data: [], 
+                    error: null 
+                  })
+                })
+              })
+            }),
+            insert: () => ({ data: null, error: null }),
+          } as any;
+        }
+        if (table === 'note_tags') {
+          return {
+            select: () => ({
+              limit: () => ({ 
+                data: [{ tags: { name: 'work' } }], 
+                error: null 
+              })
+            })
+          } as any;
+        }
+        if (table === 'notes') {
+          return {
+            select: () => ({
+              eq: () => ({
+                gte: () => ({
+                  order: () => ({ 
+                    data: [{ sentiment: 'positive', created_at: '2025-01-01' }], 
+                    error: null 
+                  })
+                })
+              })
+            })
+          } as any;
+        }
+        return { select: () => ({ data: [], error: null }) } as any;
+      }),
+      rpc: jest.fn((fn: string) => {
+        if (fn === 'get_user_analytics_summary') {
+          return {
+            single: jest.fn(async () => ({
+              data: { total_notes: 10, total_summaries: 10 },
+              error: null,
+            })),
+          } as any;
+        }
+        // increment_user_analytics or others
+        return {} as any;
+      })
+    });
+  });
+  
   it('GET returns analytics aggregate data', async () => {
+    const { GET } = require('@/app/api/analytics/route');
+    
     const req = new Request('http://localhost/api/analytics?range=7');
     const res = await GET(req as any);
+    if (res.status !== 200) {
+      const body = await res.json();
+      console.error('Response error:', body);
+    }
     expect(res.status).toBe(200);
   });
 
   it('POST validates event_type and tracks', async () => {
+    const { POST } = require('@/app/api/analytics/route');
+    
     const bad = new Request('http://localhost/api/analytics', { method: 'POST', body: JSON.stringify({}), headers: { 'Content-Type': 'application/json' } });
     const badRes = await POST(bad as any);
     expect([400, 401]).toContain(badRes.status);

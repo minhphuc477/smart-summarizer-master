@@ -93,3 +93,61 @@ export async function GET(
     );
   }
 }
+
+// DELETE: remove a PDF document belonging to the current user
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const logger = createRequestLogger(req);
+  const startTime = Date.now();
+  const { id } = await params;
+
+  try {
+    const supabase = await getServerSupabase();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      logger.logResponse('DELETE', `/api/pdf/${id}`, 401, Date.now() - startTime);
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Verify ownership
+    const { data: pdfDoc, error: fetchError } = await supabase
+      .from('pdf_documents')
+      .select('id, storage_path')
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .single();
+    if (fetchError || !pdfDoc) {
+      logger.logResponse('DELETE', `/api/pdf/${id}`, 404, Date.now() - startTime);
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+
+    // Delete DB row (cascade foreign keys if defined)
+    const { error: deleteError } = await supabase
+      .from('pdf_documents')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', user.id);
+    if (deleteError) {
+      logger.logResponse('DELETE', `/api/pdf/${id}`, 500, Date.now() - startTime);
+      return NextResponse.json({ error: 'Failed to delete PDF' }, { status: 500 });
+    }
+
+    // Best-effort storage deletion (ignore errors)
+    if (pdfDoc.storage_path) {
+      try {
+        await supabase.storage.from('pdf-documents').remove([pdfDoc.storage_path]);
+      } catch (e) {
+        console.warn('Storage remove failed for PDF', id, e);
+      }
+    }
+
+    logger.logResponse('DELETE', `/api/pdf/${id}`, 204, Date.now() - startTime);
+    return new NextResponse(null, { status: 204 });
+  } catch (error) {
+    console.error('PDF delete error:', error);
+    logger.logResponse('DELETE', `/api/pdf/${id}`, 500, Date.now() - startTime);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}

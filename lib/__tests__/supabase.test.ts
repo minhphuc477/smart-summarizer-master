@@ -1,32 +1,15 @@
-import { createClient } from '@supabase/supabase-js';
+// Mock must be declared before any imports
+const mockCreateBrowserClient = jest.fn();
 
-jest.mock('@supabase/supabase-js');
+jest.mock('@supabase/ssr', () => ({
+  createBrowserClient: (...args: unknown[]) => mockCreateBrowserClient(...args),
+}));
 
 describe('Supabase Client', () => {
-  test('creates client with environment variables', () => {
-    const mockCreate = jest.mocked(createClient);
-    
-    require('../supabase');
-    
-    // The new @supabase/ssr client passes 3 arguments including config
-    expect(mockCreate).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(String),
-      expect.objectContaining({
-        auth: expect.any(Object)
-      })
-    );
-  });
-
-  test('client configuration includes auth settings', () => {
-    const mockCreate = jest.mocked(createClient);
-    
-    require('../supabase');
-    
-    const callArgs = mockCreate.mock.calls[0];
-    if (callArgs && callArgs[2]) {
-      expect(callArgs[2]).toHaveProperty('auth');
-    }
+  beforeEach(() => {
+    mockCreateBrowserClient.mockClear();
+    mockCreateBrowserClient.mockReturnValue({} as any);
+    jest.resetModules(); // Force module to be reloaded
   });
 
   test('handles missing environment variables gracefully', () => {

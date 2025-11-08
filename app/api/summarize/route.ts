@@ -163,12 +163,9 @@ export async function POST(req: Request) {
         fetch(`${req.url.replace('/api/summarize', '/api/generate-embedding')}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(cookieHeader ? { cookie: cookieHeader } : {}) },
-          body: JSON.stringify({
-            noteId: noteId,
-            text: safeNotes
-          })
+          body: JSON.stringify({ noteId }) // let embedding route fetch best available content
         }).catch(err => {
-          logger.error('Error generating embedding', err as Error, { noteId });
+          logger.error('Error scheduling embedding', err as Error, { noteId });
         });
 
           // Bước 5: Auto-categorize into smart folders (async, không block response)

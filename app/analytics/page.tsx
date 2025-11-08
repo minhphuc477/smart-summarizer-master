@@ -37,13 +37,22 @@ export default function AnalyticsPage() {
             Track your usage and productivity insights
           </p>
         </div>
-        <button
-          onClick={() => router.push('/')}
-          className="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-all border bg-background hover:bg-accent hover:text-accent-foreground h-8 rounded-md px-3"
-          aria-label="Back to Home"
-        >
-          Back to Home
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => router.push('/analytics/embeddings')}
+            className="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-all border bg-background hover:bg-accent hover:text-accent-foreground h-8 rounded-md px-3"
+            aria-label="Embedding Metrics"
+          >
+            Embedding Metrics
+          </button>
+          <button
+            onClick={() => router.push('/')}
+            className="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-all border bg-background hover:bg-accent hover:text-accent-foreground h-8 rounded-md px-3"
+            aria-label="Back to Home"
+          >
+            Back to Home
+          </button>
+        </div>
       </div>
       <ErrorBoundary>
         <AnalyticsDashboard userId={userId} />

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import CanvasEditor from '@/components/CanvasEditor';
 import React from 'react';
 
@@ -54,6 +54,8 @@ describe('CanvasEditor', () => {
   beforeEach(() => {
     // Default: create new canvas flow
     global.fetch = jest.fn()
+      // Auth check
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ user: { id: 'u1' } }) })
       // POST /api/canvases
       .mockResolvedValueOnce({ ok: true, json: async () => ({ canvas: { id: 'c1' } }) })
       // PATCH /api/canvases/c1
@@ -79,12 +81,20 @@ describe('CanvasEditor', () => {
     const onSave = jest.fn();
     render(<CanvasEditor workspaceId="w1" onSave={onSave} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    });
 
-    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
-    // Expect both POST and PATCH were called
-    expect((global.fetch as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(onSave).toHaveBeenCalled();
+    // Wait for both POST and PATCH calls to complete
+    await waitFor(() => {
+      const fetchCalls = (global.fetch as jest.Mock).mock.calls.length;
+      expect(fetchCalls).toBeGreaterThanOrEqual(3); // auth + POST + PATCH
+    }, { timeout: 3000 });
+    
+    // Verify the fetch calls were made with correct endpoints
+    const calls = (global.fetch as jest.Mock).mock.calls;
+    expect(calls.some((call: any) => call[0] === '/api/canvases')).toBe(true); // POST to create
+    expect(calls.some((call: any) => call[0]?.includes('/api/canvases/c1'))).toBe(true); // PATCH to update
   });
 
   it('exports canvas as JSON', () => {

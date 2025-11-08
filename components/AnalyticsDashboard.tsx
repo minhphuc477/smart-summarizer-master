@@ -96,6 +96,12 @@ function AnalyticsDashboard({ userId: _userId }: { userId: string }) {
     );
   }
 
+  // Guard: if summary object exists but is all zeros, show gentle empty indicators for charts
+  // (Reserved) Potential flag for adaptive empty states
+  // const isMostlyEmpty = (data.summary?.total_notes ?? 0) === 0 &&
+  //   (data.summary?.total_summaries ?? 0) === 0 &&
+  //   (data.summary?.total_words ?? 0) === 0;
+
   return (
     <div className="space-y-6 p-6">
       {/* Header */}
@@ -178,6 +184,11 @@ function AnalyticsDashboard({ userId: _userId }: { userId: string }) {
           <CardTitle>Activity Over Time</CardTitle>
         </CardHeader>
         <CardContent>
+          {data.analytics.length === 0 ? (
+            <div className="flex items-center justify-center h-[300px] text-muted-foreground">
+              No activity recorded in this range
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={data.analytics}>
               <CartesianGrid strokeDasharray="3 3" />
@@ -203,7 +214,7 @@ function AnalyticsDashboard({ userId: _userId }: { userId: string }) {
                 strokeWidth={2}
               />
             </LineChart>
-          </ResponsiveContainer>
+          </ResponsiveContainer>) }
         </CardContent>
       </Card>
 
@@ -215,6 +226,11 @@ function AnalyticsDashboard({ userId: _userId }: { userId: string }) {
             <CardTitle>Feature Usage</CardTitle>
           </CardHeader>
           <CardContent>
+            {(data.summary?.total_notes || 0) + (data.summary?.total_canvases || 0) + (data.summary?.total_templates_used || 0) === 0 ? (
+              <div className="flex items-center justify-center h-[300px] text-muted-foreground">
+                No feature usage yet
+              </div>
+            ) : (
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={[
                 { name: 'Notes', value: data.summary?.total_notes || 0 },
@@ -227,7 +243,7 @@ function AnalyticsDashboard({ userId: _userId }: { userId: string }) {
                 <Tooltip />
                 <Bar dataKey="value" fill="#3b82f6" />
               </BarChart>
-            </ResponsiveContainer>
+            </ResponsiveContainer>)}
           </CardContent>
         </Card>
 
@@ -240,6 +256,11 @@ function AnalyticsDashboard({ userId: _userId }: { userId: string }) {
             </CardTitle>
           </CardHeader>
           <CardContent>
+            {(data.sentimentDistribution?.positive || 0) + (data.sentimentDistribution?.neutral || 0) + (data.sentimentDistribution?.negative || 0) === 0 ? (
+              <div className="flex items-center justify-center h-[300px] text-muted-foreground">
+                No sentiment data yet
+              </div>
+            ) : (
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
@@ -261,7 +282,7 @@ function AnalyticsDashboard({ userId: _userId }: { userId: string }) {
                 </Pie>
                 <Tooltip />
               </PieChart>
-            </ResponsiveContainer>
+            </ResponsiveContainer>)}
           </CardContent>
         </Card>
       </div>

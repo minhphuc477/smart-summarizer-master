@@ -189,9 +189,11 @@ describe('RealtimeCollaboration', () => {
       await collaboration.joinPresence({ name: 'Test' });
       await collaboration.updateCursorPosition(position);
       
-      // The channel's send method should be called
+      // The channel's track method should be called (not send)
       const channel = mockSupabase.channel.mock.results[0].value;
-      expect(channel.send).toHaveBeenCalled();
+      expect(channel.track).toHaveBeenCalledWith({
+        cursor_position: position,
+      });
     });
 
     it('should leave presence', async () => {

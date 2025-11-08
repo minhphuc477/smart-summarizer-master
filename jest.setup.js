@@ -1,5 +1,11 @@
 // Learn more: https://github.com/testing-library/jest-dom
 import '@testing-library/jest-dom'
+
+// Polyfill TextEncoder/TextDecoder for jsdom
+import { TextEncoder, TextDecoder } from 'util';
+global.TextEncoder = TextEncoder;
+global.TextDecoder = TextDecoder;
+
 // Polyfill Fetch API types (Request, Response, Headers) for Next.js route tests
 // Attempt to polyfill Web Fetch API types without adding deps
 if (typeof globalThis.Headers === 'undefined') {

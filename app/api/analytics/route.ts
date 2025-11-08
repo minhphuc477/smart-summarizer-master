@@ -109,8 +109,17 @@ export async function GET(request: NextRequest) {
       .sort((a, b) => a.date.localeCompare(b.date));
 
     return NextResponse.json({
-      analytics,
-      summary,
+      analytics: analytics || [],
+      summary: summary || {
+        total_notes: 0,
+        total_summaries: 0,
+        total_canvases: 0,
+        total_templates_used: 0,
+        total_words: 0,
+        total_active_minutes: 0,
+        active_days: 0,
+        last_active_date: new Date(0).toISOString(),
+      },
       recentEvents,
       topTags,
       sentimentData,

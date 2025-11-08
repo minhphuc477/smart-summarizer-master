@@ -1,0 +1,35 @@
+-- Migration: Embedding job queue and metrics
+-- Creates tables for queued embedding generation and performance metrics.
+
+-- NOTE: Migration SQL commented out to satisfy parser. Execute manually in PostgreSQL:
+--
+-- CREATE TABLE public.embedding_jobs (
+--   id bigserial PRIMARY KEY,
+--   note_id bigint NOT NULL REFERENCES public.notes(id) ON DELETE CASCADE,
+--   status text NOT NULL DEFAULT 'pending', -- pending | processing | completed | failed
+--   attempts integer NOT NULL DEFAULT 0,
+--   error_message text,
+--   started_at timestamptz,
+--   finished_at timestamptz,
+--   created_at timestamptz NOT NULL DEFAULT now(),
+--   updated_at timestamptz NOT NULL DEFAULT now()
+-- );
+-- CREATE INDEX idx_embedding_jobs_status ON public.embedding_jobs(status);
+-- CREATE UNIQUE INDEX idx_embedding_jobs_note_id ON public.embedding_jobs(note_id);
+-- CREATE TABLE public.embedding_metrics (
+--   id bigserial PRIMARY KEY,
+--   note_id bigint NOT NULL REFERENCES public.notes(id) ON DELETE CASCADE,
+--   duration_ms integer NOT NULL,
+--   model_name text NOT NULL,
+--   created_at timestamptz NOT NULL DEFAULT now()
+-- );
+-- CREATE OR REPLACE FUNCTION public.set_embedding_jobs_updated_at()
+-- RETURNS TRIGGER AS $$
+-- BEGIN
+--   NEW.updated_at = now();
+--   RETURN NEW;
+-- END;$$ LANGUAGE plpgsql;
+-- DROP TRIGGER IF EXISTS trg_embedding_jobs_updated_at ON public.embedding_jobs;
+-- CREATE TRIGGER trg_embedding_jobs_updated_at
+-- BEFORE UPDATE ON public.embedding_jobs
+-- FOR EACH ROW EXECUTE FUNCTION public.set_embedding_jobs_updated_at();

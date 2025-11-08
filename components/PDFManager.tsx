@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -19,6 +19,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { createResumableUpload, ResumableUpload } from '@/lib/resumableUpload';
 import type { Session } from '@supabase/supabase-js';
 
 interface PDFDocument {
@@ -47,6 +48,11 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
   const [pdfs, setPdfs] = useState<PDFDocument[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadEta, setUploadEta] = useState<string | null>(null);
+  const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
+  const resumableRef = useRef<ResumableUpload | null>(null);
+  const [resumable, setResumable] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -101,51 +107,146 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
 
     setUploading(true);
     setUploadProgress(0);
+    setUploadEta(null);
     setError(null);
     setSuccess(null);
 
     try {
       const formData = new FormData();
       formData.append('file', selectedFile);
-      if (selectedWorkspaceId) {
-        formData.append('workspace_id', selectedWorkspaceId);
-      }
-      if (selectedFolderId) {
-        formData.append('folder_id', selectedFolderId.toString());
+      if (selectedWorkspaceId) formData.append('workspace_id', selectedWorkspaceId);
+      if (selectedFolderId) formData.append('folder_id', selectedFolderId.toString());
+
+      // If large file (> 8MB) use resumable tus upload directly to storage
+      if (selectedFile.size > 8 * 1024 * 1024) {
+        setResumable(true);
+        const ru = createResumableUpload({
+          file: selectedFile,
+          supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+          bucket: 'pdf-documents',
+          userId: session.user.id,
+          onProgress: (uploaded, total) => {
+            const pct = Math.round((uploaded / total) * 100);
+            setUploadProgress(pct);
+          },
+          onEta: (secs) => {
+            if (!isFinite(secs)) return;
+            const m = Math.floor(secs / 60);
+            const s = Math.round(secs % 60);
+            setUploadEta(`${m > 0 ? m + 'm ' : ''}${s}s remaining`);
+          },
+          onComplete: async () => {
+            setUploadProgress(100);
+            setUploadEta('Finalizing...');
+            // After tus completes, still create DB record via existing API (lightweight zero-byte insert path)
+            const response = await fetch('/api/pdf/upload', { method: 'POST', body: formData });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || 'Upload record creation failed');
+            const uploadedId = data?.pdf?.id;
+            if (uploadedId) await requestProcessing(uploadedId);
+            await fetchPDFs();
+            setSuccess('PDF uploaded via resumable upload. Queued for processing...');
+            setSelectedFile(null);
+            setResumable(false);
+          },
+          onError: (err) => {
+            setError(err.message);
+          }
+        });
+        resumableRef.current = ru;
+        void ru.startOrResume();
+        return; // exit standard flow
       }
 
-      // Simulate progress
-      const progressInterval = setInterval(() => {
-        setUploadProgress(prev => Math.min(prev + 10, 90));
-      }, 200);
+      const startTime = Date.now();
+      const xhr = new XMLHttpRequest();
+      uploadXhrRef.current = xhr;
 
-      const response = await fetch('/api/pdf/upload', {
-        method: 'POST',
-        body: formData,
+      type UploadResponse = { status: number; ok: boolean; body: { error?: string; pdf?: { id: string } } };
+      const progressPromise: Promise<UploadResponse> = new Promise((resolve, reject) => {
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const percent = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(percent);
+            // ETA calc
+            const elapsed = (Date.now() - startTime) / 1000; // seconds
+            const speed = event.loaded / elapsed; // bytes/sec
+            const remainingBytes = event.total - event.loaded;
+            const remainingSec = remainingBytes / (speed || 1);
+            if (percent < 100) {
+              const mins = Math.floor(remainingSec / 60);
+              const secs = Math.round(remainingSec % 60);
+              setUploadEta(`${mins > 0 ? mins + 'm ' : ''}${secs}s remaining`);
+            } else {
+              setUploadEta('Processing...');
+            }
+          }
+        };
+        xhr.onerror = () => reject(new Error('Network error during upload'));
+        xhr.onabort = () => reject(new Error('Upload aborted'));
+        xhr.onload = async () => {
+          try {
+            const bodyText = xhr.responseText || '{}';
+            const json = JSON.parse(bodyText) as { error?: string; pdf?: { id: string } };
+            resolve({ status: xhr.status, ok: xhr.status >= 200 && xhr.status < 300, body: json });
+          } catch (e) {
+            reject(e);
+          }
+        };
+        xhr.open('POST', '/api/pdf/upload');
+        xhr.send(formData);
       });
 
-      clearInterval(progressInterval);
-
-      const respData = await response.json().catch(() => ({})) as { error?: string; pdf?: { id: string } };
-      if (!response.ok) {
-        throw new Error(respData.error || 'Upload failed');
-      }
+  const response = await progressPromise;
+  const respData = response.body;
+  if (!response.ok) throw new Error(respData?.error || 'Upload failed');
 
       setUploadProgress(100);
+      setUploadEta('Finalizing...');
       setSuccess('PDF uploaded. Queued for processing...');
       setSelectedFile(null);
-      // Request async processing and start polling
       const uploadedId = respData?.pdf?.id;
-      if (uploadedId) {
-        await requestProcessing(uploadedId);
-      }
-      // Refresh list (initial status)
+      if (uploadedId) await requestProcessing(uploadedId);
       await fetchPDFs();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Upload failed');
     } finally {
       setUploading(false);
+      setUploadEta(null);
+      uploadXhrRef.current = null;
+      // leave progress bar at 100 briefly then reset
+      setTimeout(() => setUploadProgress(0), 800);
+    }
+  };
+
+  const cancelUpload = () => {
+    if (uploadXhrRef.current && uploading) {
+      uploadXhrRef.current.abort();
+      setUploading(false);
+      setUploadEta(null);
       setUploadProgress(0);
+      setError('Upload canceled');
+    }
+    if (resumableRef.current && resumable) {
+      resumableRef.current.abort();
+      setUploading(false);
+      setPaused(false);
+      setResumable(false);
+      setUploadEta(null);
+      setUploadProgress(0);
+      setError('Upload canceled');
+    }
+  };
+
+  const togglePause = () => {
+    if (!resumableRef.current) return;
+    if (paused) {
+      setPaused(false);
+      resumableRef.current.resume();
+    } else {
+      resumableRef.current.pause();
+      setPaused(true);
     }
   };
   
@@ -235,22 +336,30 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
   const handleDelete = async (pdfId: string) => {
     if (!confirm('Are you sure you want to delete this PDF?')) return;
 
+    // Optimistic UI: remove immediately, restore on failure
+    const prev = pdfs;
+    setPdfs(pdfs.filter(p => p.id !== pdfId));
+
     try {
       const response = await fetch(`/api/pdf/${pdfId}`, {
         method: 'DELETE',
       });
 
-      if (!response.ok) {
+      if (!response.ok && response.status !== 204) {
         throw new Error('Delete failed');
       }
 
       setSuccess('PDF deleted successfully');
-      await fetchPDFs();
       if (selectedPdf?.id === pdfId) {
         setSelectedPdf(null);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Delete failed');
+      // rollback
+      setPdfs(prev);
+    } finally {
+      // Refresh to be safe
+      await fetchPDFs();
     }
   };
 
@@ -329,10 +438,36 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
           {uploadProgress > 0 && (
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
-                <span>Uploading...</span>
+                <span>{resumable ? 'Uploading (resumable)...' : 'Uploading...'}</span>
                 <span>{uploadProgress}%</span>
               </div>
               <Progress value={uploadProgress} />
+              {uploadEta && (
+                <div className="text-xs text-muted-foreground flex justify-between">
+                  <span>{uploadEta}</span>
+                  {uploading && !resumable && (
+                    <button
+                      type="button"
+                      onClick={cancelUpload}
+                      className="text-destructive hover:underline"
+                    >Cancel</button>
+                  )}
+                  {uploading && resumable && (
+                    <div className="flex gap-3">
+                      <button
+                        type="button"
+                        onClick={togglePause}
+                        className="text-muted-foreground hover:underline"
+                      >{paused ? 'Resume' : 'Pause'}</button>
+                      <button
+                        type="button"
+                        onClick={cancelUpload}
+                        className="text-destructive hover:underline"
+                      >Cancel</button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

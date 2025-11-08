@@ -1,4 +1,5 @@
 "use client";
+import useAsyncAction from '@/lib/useAsyncAction';
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase as defaultSupabase } from '@/lib/supabase';
@@ -6,7 +7,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { Card, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
-import { Trash2, FolderInput, Share2, Copy, Check, Edit, Download, Tag, X, ChevronDown, Star, Filter, Calendar, CheckSquare, Square, Volume2, VolumeX, ArrowUpDown, MessageSquare, Users, History as HistoryIcon } from 'lucide-react';
+import { Trash2, FolderInput, Share2, Copy, Check, Edit, Download, Tag, X, Star, Filter, Calendar, CheckSquare, Square, Volume2, VolumeX, ArrowUpDown, MessageSquare, Users, History as HistoryIcon } from 'lucide-react';
 import * as guestMode from '@/lib/guestMode';
 import type { GuestNote } from '@/lib/guestMode';
 import {
@@ -143,7 +144,8 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const PAGE_SIZE = 10;
+  const [totalCount, setTotalCount] = useState(0);
+  const PAGE_SIZE = 4;
   const [analyzingNoteId, setAnalyzingNoteId] = useState<number | null>(null);
   // Sonner toasts are used globally via <Toaster /> in layout
   const [editNoteId, setEditNoteId] = useState<number | null>(null);
@@ -157,6 +159,26 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
   const [newTagInput, setNewTagInput] = useState('');
   const [tagSuggestions, setTagSuggestions] = useState<{ id: number; name: string }[]>([]);
   const [showRelated, setShowRelated] = useState(false);
+  const { run: runBackfill, isRunning: backfillRunning } = useAsyncAction();
+  const handleBackfillEmbeddings = useCallback(async () => {
+    await runBackfill(async () => {
+      if (isGuest || !userId) return;
+      try {
+        const res = await fetch('/api/admin/backfill-embeddings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: userId, limit: 100 }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || 'Failed');
+        const processed = data?.processed ?? data?.count ?? 0;
+        toast.success(`Embeddings backfill queued: ${processed} notes`);
+      } catch (e) {
+        console.error('Backfill error', e);
+        toast.error('Failed to backfill embeddings');
+      }
+    });
+  }, [isGuest, userId, runBackfill]);
   
   // Bulk selection state
   const [selectedNoteIds, setSelectedNoteIds] = useState<Set<number>>(new Set());
@@ -307,7 +329,8 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
             const list = (data || []) as unknown as Note[];
             setNotes(list);
             // Only show Load More when we actually have more to fetch
-            const total = count || list.length || 0;
+            const total = (count as number | null | undefined) ?? (list.length || 0);
+            setTotalCount(total);
             setHasMore(total > PAGE_SIZE);
             setPage(1);
           }
@@ -329,24 +352,21 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
     setFocusedIndex(null);
   }, [filterQuery, sentimentFilter, dateFilter, selectedTagFilter, isGuest]);
 
-  // Load more notes (pagination)
-  const loadMore = async () => {
-    if (isGuest || !hasMore || isLoadingMore) return;
-
+  // Fetch specific page (1-based)
+  const fetchPage = useCallback(async (targetPage: number) => {
+    if (isGuest || isLoadingMore) return;
     setIsLoadingMore(true);
-  const nextPage = page + 1;
-  const from = page * PAGE_SIZE;
-  const to = from + PAGE_SIZE - 1;
+    const from = (targetPage - 1) * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
 
     try {
-      // Build base select
       const base = supabase
         .from('notes')
         .select(`
-          id, 
-          created_at, 
-          summary, 
-          persona, 
+          id,
+          created_at,
+          summary,
+          persona,
           sentiment,
           folder_id,
           is_public,
@@ -368,12 +388,7 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
           )
         `, { count: 'exact' });
 
-      // Apply optional folder filter, pagination, and order
-        const query = selectedFolderId !== null
-        ? base.eq('folder_id', selectedFolderId)
-        : base;
-      
-      // Execute query with ordering and optional range (support test mocks)
+      const query = selectedFolderId !== null ? base.eq('folder_id', selectedFolderId) : base;
       const ordered1 = query.order('is_pinned', { ascending: false });
       const canChainOrder = typeof (ordered1 as unknown as { order?: unknown }).order === 'function';
       const ordered = canChainOrder
@@ -381,36 +396,48 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
         ? (ordered1 as any).order('created_at', { ascending: false })
         : ordered1;
 
-      let data: unknown[] | null | undefined;
+      let pageData: unknown[] | null | undefined;
       let error: { message?: string } | null | undefined;
       let count: number | null | undefined;
       const maybeHasRange = typeof (ordered as unknown as { range?: unknown }).range === 'function';
       if (maybeHasRange) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const res = await (ordered as any).range(from, to);
-        data = res?.data;
+        pageData = res?.data;
         error = res?.error;
         count = res?.count;
       } else {
+        // Fallback: fetch all and slice client-side (used in tests/mocks)
         const res = await ordered as unknown as { data?: unknown[]; error?: { message?: string } | null };
-        data = res?.data;
+        const all = res?.data || [];
+        pageData = all.slice(from, to + 1);
         error = res?.error;
-        count = data ? data.length : 0;
+        count = all.length;
       }
 
       if (error) {
-        console.error("Error loading more notes:", error);
-        toast.error('Failed to load more notes');
-        // Stop showing the button after an error to avoid repeated failures
-        setHasMore(false);
+        console.error('Error fetching page:', error);
+        toast.error('Failed to change page');
       } else {
-  setNotes(prev => [...prev, ...(data || []) as unknown as Note[]]);
-  setPage(nextPage);
-  setHasMore(!!count && count > (to + 1));
+        const list = (pageData || []) as unknown as Note[];
+        setNotes(list);
+        const total = (count as number | null | undefined) ?? list.length;
+        setTotalCount(total);
+        setHasMore(targetPage * PAGE_SIZE < total);
+        setPage(targetPage);
+        // Reset selection/focus on page change
+        setSelectedNoteIds(new Set());
+        setFocusedIndex(null);
       }
     } finally {
       setIsLoadingMore(false);
     }
+  }, [PAGE_SIZE, isGuest, isLoadingMore, selectedFolderId, supabase]);
+
+  // Load more notes (next page)
+  const loadMore = async () => {
+    if (isGuest || !hasMore || isLoadingMore) return;
+    await fetchPage(page + 1);
   };
 
   // Delete note (invoked after confirmation)
@@ -1124,26 +1151,52 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
     };
   
     const handleCloseDetails = async () => {
-      if (collaboration) {
-        await collaboration.leavePresence();
-        await collaboration.cleanup();
+      try {
+        if (collaboration) {
+          // Best-effort leave presence and cleanup; don't block UI if these fail
+          try {
+            await collaboration.leavePresence();
+          } catch (e) {
+            console.warn('leavePresence failed', e);
+          }
+          try {
+            await collaboration.cleanup();
+          } catch (e) {
+            console.warn('cleanup failed', e);
+          }
+        }
+      } finally {
+        // Always reset local UI state so the dialog can close promptly
+        setDetailsNoteId(null);
+        setCollaboration(null);
+        // Preserve comments so they remain visible immediately on reopen; they'll be refreshed on mount
+        setPresence([]);
+        setVersions([]);
       }
-      setDetailsNoteId(null);
-      setCollaboration(null);
-      setComments([]);
-      setPresence([]);
-      setVersions([]);
     };
   
     const handleAddComment = async (data: { content: string; parent_id?: number; mentions: string[] }) => {
-      if (!collaboration) return;
-    
-      const result = await collaboration.addComment(data);
-      if (result.error) {
-        toast.error('Failed to add comment');
-      } else {
+        if (!collaboration) return { data: null, error: { message: 'Not connected' } };
+
+        const result = await collaboration.addComment(data);
+        if (result.error) {
+          toast.error('Failed to add comment');
+          return result;
+        }
+
+        // Optimistically append the newly created comment so UI updates immediately
+        if (result.data) {
+          const newComment = result.data as Comment;
+          setComments(prev => {
+            // Avoid duplicate if subscription already provided it
+            const exists = prev.find(c => c.id === newComment.id);
+            if (exists) return prev;
+            return [...prev, newComment];
+          });
+        }
+
         toast.success('Comment added');
-      }
+        return result;
   };
 
   const handleResolve = async (commentId: number) => {
@@ -2019,24 +2072,61 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
           )
         )}
         
-        {/* Load More Button */}
-        {!isGuest && !loading && hasMore && (
-          <div className="flex justify-center pt-4">
-            <Button
-              variant="outline"
-              onClick={loadMore}
-              disabled={isLoadingMore}
-              className="gap-2"
-            >
-              {isLoadingMore ? (
-                'Loading...'
-              ) : (
-                <>
-                  <ChevronDown className="h-4 w-4" />
-                  Load More
-                </>
+        {/* Pagination Controls */}
+        {!isGuest && !loading && notes.length > 0 && (
+          <div className="flex items-center justify-between pt-4 gap-4 flex-wrap">
+            <div className="text-xs text-muted-foreground">
+              Page {page} of {Math.max(1, Math.ceil(totalCount / PAGE_SIZE))} • Showing {notes.length} of {totalCount}
+            </div>
+            <div className="flex items-center gap-2">
+              {!!userId && (
+                <Button variant="outline" size="sm" onClick={handleBackfillEmbeddings} disabled={backfillRunning} title="Backfill missing embeddings for your notes">
+                  Backfill Embeddings
+                </Button>
               )}
-            </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page === 1 || isLoadingMore}
+                onClick={() => {
+                  if (page > 1) {
+                    fetchPage(page - 1);
+                  }
+                }}
+              >
+                Prev
+              </Button>
+              {/* Numbered pagination buttons */}
+              {Array.from({ length: Math.max(1, Math.ceil(totalCount / PAGE_SIZE)) })
+                .slice(0, 200) // guard against absurd counts
+                .map((_, idx) => {
+                  const p = idx + 1;
+                  const isCurrent = p === page;
+                  // Show first, last, and a window around current
+                  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+                  const inWindow = p === 1 || p === totalPages || Math.abs(p - page) <= 2;
+                  if (!inWindow) return null;
+                  return (
+                    <Button
+                      key={p}
+                      variant={isCurrent ? 'default' : 'outline'}
+                      size="sm"
+                      disabled={isCurrent || isLoadingMore}
+                      onClick={() => fetchPage(p)}
+                    >
+                      {p}
+                    </Button>
+                  );
+                })}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!hasMore || isLoadingMore}
+                onClick={() => loadMore()}
+              >
+                {isLoadingMore ? 'Loading…' : 'Next'}
+              </Button>
+            </div>
           </div>
         )}
       </div>

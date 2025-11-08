@@ -51,7 +51,50 @@ export async function GET() {
         return NextResponse.json({ error: workspaceError.message }, { status: 500 });
       }
 
-      workspaces = workspaceData;
+      // Compute member_count, note_count, folder_count and role per workspace
+      const { data: membersCount } = await supabase
+        .from('workspace_members')
+        .select('workspace_id, user_id', { count: 'exact', head: false })
+        .in('workspace_id', workspaceIds);
+
+      const memberMap: Record<string, number> = {};
+      (membersCount as Array<{ workspace_id: string }> | null || []).forEach((m) => {
+        const id = m.workspace_id;
+        memberMap[id] = (memberMap[id] || 0) + 1;
+      });
+
+      const { data: folderCounts } = await supabase
+        .from('folders')
+        .select('workspace_id', { count: 'exact', head: false })
+        .in('workspace_id', workspaceIds);
+
+      const folderMap: Record<string, number> = {};
+      (folderCounts as Array<{ workspace_id: string }> | null || []).forEach((f) => {
+        const id = f.workspace_id;
+        folderMap[id] = (folderMap[id] || 0) + 1;
+      });
+
+      const { data: noteCounts } = await supabase
+        .from('notes')
+        .select('workspace_id', { count: 'exact', head: false })
+        .in('workspace_id', workspaceIds);
+
+      const noteMap: Record<string, number> = {};
+      (noteCounts as Array<{ workspace_id: string }> | null || []).forEach((n) => {
+        const id = n.workspace_id;
+        noteMap[id] = (noteMap[id] || 0) + 1;
+      });
+
+  const roleMap: Record<string, string> = {};
+  (membershipData as Array<{ workspace_id: string; role: string }> | null || []).forEach((m) => { roleMap[m.workspace_id] = m.role; });
+
+      workspaces = (workspaceData || []).map(w => ({
+        ...w,
+        role: (roleMap[w.id] as 'owner'|'admin'|'member') || 'member',
+        member_count: memberMap[w.id] || 1,
+        folder_count: folderMap[w.id] || 0,
+        note_count: noteMap[w.id] || 0,
+      }));
       error = null;
     }
 
@@ -112,7 +155,12 @@ export async function POST(request: Request) {
 
     if (error) {
       console.error('Error creating workspace:', error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // Surface duplicate-name constraint as a friendly conflict
+      const code = (error as { code?: string }).code;
+      if (code === '23505') {
+        return NextResponse.json({ error: 'You already have a workspace with this name.' }, { status: 409 });
+      }
+      return NextResponse.json({ error: error.message || 'Failed to create workspace' }, { status: 500 });
     }
 
     return NextResponse.json({ workspace }, { status: 201 });

@@ -32,10 +32,31 @@ describe('GET /api/workspaces', () => {
     // Authenticated user and workspace data
     getServerSupabase.mockResolvedValue({
       auth: { getUser: jest.fn(async () => ({ data: { user: { id: 'user-1' } }, error: null })) },
+      rpc: jest.fn(async () => ({ 
+        data: [{ id: 'w1', name: 'Workspace', owner_id: 'user-1', role: 'owner', member_count: 1 }], 
+        error: null 
+      })),
       from: jest.fn((table: string) => {
-        if (table === 'user_workspaces') {
+        if (table === 'workspace_members') {
           return {
-            select: () => ({ eq: () => ({ order: () => ({ data: [{ id: 'w1', name: 'Workspace', user_id: 'user-1' }], error: null }) }) })
+            select: () => ({ 
+              eq: () => ({ 
+                data: [{ workspace_id: 'w1', role: 'owner' }], 
+                error: null 
+              }) 
+            })
+          } as any;
+        }
+        if (table === 'workspaces') {
+          return {
+            select: () => ({ 
+              in: () => ({ 
+                order: () => ({ 
+                  data: [{ id: 'w1', name: 'Workspace', owner_id: 'user-1' }], 
+                  error: null 
+                }) 
+              }) 
+            })
           } as any;
         }
         return { select: () => ({ data: [], error: null }) } as any;

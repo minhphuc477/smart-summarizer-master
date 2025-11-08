@@ -46,6 +46,13 @@ export const getServerSupabase = jest.fn(async () => {
       })),
     },
     from: jest.fn(() => createQueryBuilder()),
-    rpc: jest.fn(async () => mockData),
+    rpc: jest.fn(() => {
+      const rpcBuilder = {
+        single: jest.fn(async () => mockSingleData),
+        then: jest.fn((callback: (value: unknown) => unknown) => Promise.resolve(mockData).then(callback)),
+        catch: jest.fn((callback: (error: unknown) => unknown) => Promise.resolve(mockData).catch(callback)),
+      };
+      return rpcBuilder;
+    }),
   };
 });

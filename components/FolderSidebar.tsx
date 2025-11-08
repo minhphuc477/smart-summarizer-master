@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import useAsyncAction from '@/lib/useAsyncAction';
 
 type FolderType = {
   id: number;
@@ -45,6 +46,11 @@ export default function FolderSidebar({ userId: _userId, onFolderSelect, selecte
   const [folderName, setFolderName] = useState("");
   const [folderDescription, setFolderDescription] = useState("");
   const [folderColor, setFolderColor] = useState("#3B82F6");
+
+  // Async action guards
+  const { run: runCreate, isRunning: creating } = useAsyncAction();
+  const { run: runUpdate, isRunning: updating } = useAsyncAction();
+  const { run: runDelete, isRunning: deleting } = useAsyncAction();
 
   const colors = [
     { name: "Blue", value: "#3B82F6" },
@@ -86,8 +92,7 @@ export default function FolderSidebar({ userId: _userId, onFolderSelect, selecte
   // Create folder
   const handleCreateFolder = async () => {
     if (!folderName.trim()) return;
-
-    try {
+    await runCreate(async () => {
       const response = await fetch("/api/folders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -109,17 +114,13 @@ export default function FolderSidebar({ userId: _userId, onFolderSelect, selecte
         const data = await response.json().catch(() => ({}));
         toast.error(data.error || 'Failed to create folder');
       }
-    } catch (error) {
-      console.error("Error creating folder:", error);
-      toast.error('Failed to create folder');
-    }
+    });
   };
 
   // Update folder
   const handleUpdateFolder = async () => {
     if (!selectedFolder || !folderName.trim()) return;
-
-    try {
+    await runUpdate(async () => {
       const response = await fetch(`/api/folders/${selectedFolder.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -139,17 +140,13 @@ export default function FolderSidebar({ userId: _userId, onFolderSelect, selecte
         const data = await response.json().catch(() => ({}));
         toast.error(data.error || 'Failed to update folder');
       }
-    } catch (error) {
-      console.error("Error updating folder:", error);
-      toast.error('Failed to update folder');
-    }
+    });
   };
 
   // Delete folder
   const handleDeleteFolder = async () => {
     if (!selectedFolder) return;
-
-    try {
+    await runDelete(async () => {
       const response = await fetch(`/api/folders/${selectedFolder.id}`, {
         method: "DELETE",
       });
@@ -166,10 +163,7 @@ export default function FolderSidebar({ userId: _userId, onFolderSelect, selecte
         const data = await response.json().catch(() => ({}));
         toast.error(data.error || 'Failed to delete folder');
       }
-    } catch (error) {
-      console.error("Error deleting folder:", error);
-      toast.error('Failed to delete folder');
-    }
+    });
   };
 
   const openEditDialog = (folder: FolderType) => {
@@ -253,19 +247,17 @@ export default function FolderSidebar({ userId: _userId, onFolderSelect, selecte
             onDragOver={(e) => handleDragOver(e, null)}
             onDragLeave={handleDragLeave}
             onDrop={(e) => handleDrop(e, null)}
-            className={`transition-all ${
-              dragOverFolderId === null ? 'ring-2 ring-primary ring-offset-2' : ''
-            }`}
+            className={`rounded-md transition-colors`}
           >
             <button
               onClick={() => onFolderSelect(null)}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors ${
                 selectedFolderId === null
-                  ? "bg-accent text-accent-foreground"
-                  : "hover:bg-accent/50"
+                  ? 'bg-accent text-accent-foreground ring-2 ring-primary ring-offset-2'
+                  : 'hover:bg-accent/50'
               }`}
             >
-              <Folder className="h-4 w-4 flex-shrink-0" style={{ color: "#94A3B8" }} />
+              <Folder className="h-4 w-4 flex-shrink-0" style={{ color: '#94A3B8' }} />
               <div className="flex-1 min-w-0">
                 <div className="font-medium text-sm">All Notes</div>
               </div>
@@ -288,13 +280,9 @@ export default function FolderSidebar({ userId: _userId, onFolderSelect, selecte
                 onDrop={(e) => handleDrop(e, folder.id)}
                 className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-all group ${
                   selectedFolderId === folder.id
-                    ? "bg-accent text-accent-foreground"
-                    : "hover:bg-accent/50"
-                } ${
-                  dragOverFolderId === folder.id
-                    ? 'ring-2 ring-primary ring-offset-2'
-                    : ''
-                }`}
+                    ? 'bg-accent text-accent-foreground ring-2 ring-primary ring-offset-2'
+                    : 'hover:bg-accent/50'
+                } ${dragOverFolderId === folder.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}
               >
                 <button
                   onClick={() => onFolderSelect(folder.id)}
@@ -386,8 +374,8 @@ export default function FolderSidebar({ userId: _userId, onFolderSelect, selecte
             <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleCreateFolder} disabled={!folderName.trim()}>
-              Create Folder
+            <Button onClick={handleCreateFolder} disabled={!folderName.trim() || creating}>
+              {creating ? 'Creating...' : 'Create Folder'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -435,8 +423,8 @@ export default function FolderSidebar({ userId: _userId, onFolderSelect, selecte
             <Button variant="outline" onClick={() => setIsEditDialogOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleUpdateFolder} disabled={!folderName.trim()}>
-              Save Changes
+            <Button onClick={handleUpdateFolder} disabled={!folderName.trim() || updating}>
+              {updating ? 'Saving...' : 'Save Changes'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -455,8 +443,8 @@ export default function FolderSidebar({ userId: _userId, onFolderSelect, selecte
             <Button variant="outline" onClick={() => setIsDeleteDialogOpen(false)}>
               Cancel
             </Button>
-            <Button variant="destructive" onClick={handleDeleteFolder}>
-              Delete Folder
+            <Button variant="destructive" onClick={handleDeleteFolder} disabled={deleting}>
+              {deleting ? 'Deleting...' : 'Delete Folder'}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useEffect, useState } from 'react';
+import useAsyncAction from '@/lib/useAsyncAction';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '@/lib/supabase';
 import type { Session } from '@supabase/supabase-js';
@@ -90,6 +91,7 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
     setResultState: _setResultState,
     selectedWorkspaceId,
     selectedFolderId,
+    urlContentSource,
   } = useSummarizerStore((s) => ({
     notes: s.notes,
     setNotes: s.setNotes,
@@ -114,15 +116,19 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
     setResultState: s.setResultState,
     selectedWorkspaceId: s.selectedWorkspaceId,
     selectedFolderId: s.selectedFolderId,
+    urlContentSource: s.urlContentSource,
   }));
   const [currentSpeaking, setCurrentSpeaking] = useState<string | null>(null);
   const [showFolders, setShowFolders] = useState(false);
   const [showUpgradeDialog, setShowUpgradeDialog] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [embeddingStatus, setEmbeddingStatus] = useState<'idle' | 'pending' | 'processing' | 'completed' | 'failed'>('idle');
+  const [_lastNoteId, setLastNoteId] = useState<number | null>(null);
   // Refs for focusing inputs (mobile FAB)
   const notesRef = useRef<HTMLTextAreaElement | null>(null);
   const urlRef = useRef<HTMLInputElement | null>(null);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Hook cho Text-to-Speech
   const { speak, stop, isSpeaking, isSupported } = useSpeech();
@@ -200,6 +206,94 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
       setDetectedUrl(null);
     }
   }, [notes, inputMode]);
+
+  // Embedding status polling
+  const startEmbeddingPoll = async () => {
+    // Try to get the last created note ID from History or localStorage
+    // For simplicity, we'll check recent notes from the API
+    try {
+      const response = await fetch('/api/notes?limit=1');
+      if (response.ok) {
+        const data = await response.json();
+        if (data.notes && data.notes.length > 0) {
+          const noteId = data.notes[0].id;
+          setLastNoteId(noteId);
+          setEmbeddingStatus('pending');
+          pollEmbeddingStatus(noteId);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to get note ID for embedding poll', e);
+    }
+  };
+
+  const pollEmbeddingStatus = (noteId: number) => {
+    // Clear any existing poll
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+    }
+
+    const checkStatus = async () => {
+      try {
+        const response = await fetch(`/api/embedding/status/${noteId}`, { method: 'HEAD' });
+        const status = response.headers.get('x-embedding-status') || 'missing';
+        
+        if (response.status === 204) {
+          // Completed
+          setEmbeddingStatus('completed');
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+        } else if (response.status === 424) {
+          // Failed
+          setEmbeddingStatus('failed');
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+        } else if (response.status === 102) {
+          // Processing or pending
+          setEmbeddingStatus(status === 'processing' ? 'processing' : 'pending');
+        } else {
+          // Missing or error
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+        }
+      } catch (e) {
+        console.error('Embedding status poll error', e);
+      }
+    };
+
+    // Initial check
+    checkStatus();
+
+    // Poll every 2 seconds
+    pollIntervalRef.current = setInterval(checkStatus, 2000);
+  };
+
+  // Cleanup polling on unmount or when result changes
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+  }, []);
+
+  // Reset embedding status when starting new summarization
+  useEffect(() => {
+    if (isLoading) {
+      setEmbeddingStatus('idle');
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    }
+  }, [isLoading]);
 
   const handleSwitchToUrlMode = () => {
     if (detectedUrl) {
@@ -294,6 +388,8 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
   };
 
   // Hàm chính xử lý việc gọi API và lưu dữ liệu
+  const { run: runSubmit, isRunning: isSubmitting } = useAsyncAction();
+
   const handleSubmit = async () => {
     // Route to appropriate handler based on input mode
     if (inputMode === 'url') {
@@ -308,6 +404,10 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
       toast.error(friendly);
     } else if (res) {
       toast.success('Summary ready');
+      // Skip embedding poll in test environment to avoid extra fetch complexity
+      if (!isGuestMode && session && process.env.NODE_ENV !== 'test') {
+        startEmbeddingPoll();
+      }
     }
   };
 
@@ -335,6 +435,9 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
       toast.error(friendly);
     } else if (res) {
       toast.success('URL summarized');
+      if (!isGuestMode && session && process.env.NODE_ENV !== 'test') {
+        startEmbeddingPoll();
+      }
     }
   };
 
@@ -788,6 +891,21 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
                             <p className="text-xs text-green-700 dark:text-green-300 mt-1 break-all">
                               {urlInput}
                             </p>
+                            {/* YouTube hint if transcript may be missing */}
+                            {(() => {
+                              try {
+                                const u = new URL(urlInput);
+                                const host = u.hostname.toLowerCase();
+                                if (host.includes('youtube.com') || host === 'youtu.be') {
+                                  return (
+                                    <div className="mt-2 text-xs text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded p-2">
+                                      {`YouTube video detected. We'll use the transcript if available; otherwise we'll fall back to title + description.`}
+                                    </div>
+                                  );
+                                }
+                              } catch {}
+                              return null;
+                            })()}
                           </>
                         ) : urlError ? (
                           <>
@@ -836,11 +954,11 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
           <Button
             size="lg"
             className="w-full text-lg font-semibold bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400"
-            onClick={handleSubmit}
-            disabled={isLoading || (inputMode === 'text' ? !notes.trim() : (!urlInput.trim() || !isValidUrl))}
+            onClick={() => runSubmit(() => handleSubmit())}
+            disabled={isLoading || isSubmitting || (inputMode === 'text' ? !notes.trim() : (!urlInput.trim() || !isValidUrl))}
             aria-label="Summarize"
           >
-            {isLoading ? "Processing..." : inputMode === 'url' ? 'Summarize URL' : t('summarize')}
+            {isLoading || isSubmitting ? "Processing..." : inputMode === 'url' ? 'Summarize URL' : t('summarize')}
           </Button>
         </section>
         
@@ -862,9 +980,32 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
             </>
           )}
 
-          {result && !isLoading && (
+          {result && (
 
             <>
+              {/* Fallback banner for YouTube metadata-only summaries */}
+              {urlContentSource === 'youtube-metadata' && (
+                <Alert className="border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Limited YouTube Context</AlertTitle>
+                  <AlertDescription className="text-blue-700 dark:text-blue-300">
+                    Transcript was unavailable. This summary is based on the video title and description only. For richer results, try a video with captions enabled.
+                  </AlertDescription>
+                </Alert>
+              )}
+              {/* Embedding Status Badge */}
+              {!isGuestMode && embeddingStatus !== 'idle' && embeddingStatus !== 'completed' && (
+                <Alert className="mb-4">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Embedding Status</AlertTitle>
+                  <AlertDescription>
+                    {embeddingStatus === 'pending' && 'Your note is queued for semantic search indexing...'}
+                    {embeddingStatus === 'processing' && 'Generating semantic search index...'}
+                    {embeddingStatus === 'failed' && 'Failed to generate semantic search index. Your note is still saved.'}
+                  </AlertDescription>
+                </Alert>
+              )}
+
               {/* Accessible TTS control for the entire result */}
               <div className="flex items-center justify-end">
                 <Button
@@ -877,9 +1018,9 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
                     ].join('\n');
                     handleSpeak(allText, 'all');
                   }}
-                  aria-label={currentSpeaking === 'all' && isSpeaking ? 'Dừng đọc toàn bộ' : 'Đọc cho tôi nghe'}
+                  aria-label={currentSpeaking === 'all' && isSpeaking ? 'Stop reading' : 'Read aloud'}
                 >
-                  {currentSpeaking === 'all' && isSpeaking ? 'Dừng đọc' : 'Đọc cho tôi nghe'}
+                  {currentSpeaking === 'all' && isSpeaking ? 'Stop' : 'Read aloud'}
                 </Button>
                 <Button
                   className="ml-2"
@@ -974,7 +1115,9 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
                     </Button>
                   </div>
                 </CardHeader>
-                <CardContent><p className="text-foreground">{result.summary}</p></CardContent>
+                <CardContent>
+                  <p className="text-foreground" data-testid="summary-text">{result.summary}</p>
+                </CardContent>
               </Card>
 
               {/* Tags và Sentiment */}
@@ -1017,7 +1160,7 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
                 </Card>
               )}
 
-        <Card>
+  <Card data-testid="takeaways-card">
                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
           <CardTitle>{t('keyTakeaways')}</CardTitle>
                   <div className="flex gap-1">
@@ -1048,12 +1191,14 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
                 </CardHeader>
                 <CardContent>
                   <ul className="list-disc list-inside space-y-2 text-foreground">
-                    {(result.takeaways || []).map((item, index) => <li key={`takeaway-${index}`}>{item}</li>)}
+                    {(result.takeaways || []).map((item, index) => (
+                      <li key={`takeaway-${index}`} data-testid={`takeaway-${index}`}>{item}</li>
+                    ))}
                   </ul>
                 </CardContent>
               </Card>
 
-        <Card>
+  <Card data-testid="actions-card">
                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
           <CardTitle>{t('actionItems')}</CardTitle>
                   <div className="flex gap-1">

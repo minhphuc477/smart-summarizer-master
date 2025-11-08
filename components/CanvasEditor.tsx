@@ -20,9 +20,10 @@ import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { useKeyboardShortcuts, commonShortcuts } from '@/lib/useKeyboardShortcuts';
 import { Input } from '@/components/ui/input';
-import { Save, Plus, Download, FileJson, Share2, Image as ImageIcon, Sparkles, Network, Grid3x3, Circle, GitBranch, CheckSquare, Link as LinkIcon, Code2, Palette, Shapes, Route, Layers, PanelsTopLeft, Users, FolderInput } from 'lucide-react';
+import { Save, Plus, Download, FileJson, Share2, Image as ImageIcon, Sparkles, Network, Grid3x3, Circle, GitBranch, CheckSquare, Link as LinkIcon, Code2, Palette, Shapes, Route, Layers, PanelsTopLeft, Users, FolderInput, FileText } from 'lucide-react';
 import { CanvasTemplateSelector } from '@/components/CanvasTemplateSelector';
 import { CanvasTemplateSaveDialog } from '@/components/CanvasTemplateSaveDialog';
+import { ImportNotesDialog } from '@/components/ImportNotesDialog';
 import { useCollaborativeCanvas, useCursorBroadcast } from '@/lib/realtime/useCollaborativeCanvas';
 import { LiveCursors } from '@/components/collaboration/LiveCursors';
 import { PresenceIndicator } from '@/components/collaboration/PresenceIndicator';
@@ -120,12 +121,15 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
   const [currentCanvasId, setCurrentCanvasId] = useState(canvasId);
   const [showMinimap, setShowMinimap] = useState(true);
   const [commandOpen, setCommandOpen] = useState(false);
-  const [currentTheme, setCurrentTheme] = useState<'light-clean' | 'dark-slate' | 'mind-map' | 'ocean'>('light-clean');
+  // Theme system
+  type ThemeKey = 'light-clean' | 'dark-slate' | 'mind-map' | 'ocean' | 'sunset' | 'forest' | 'grape' | 'rose';
+  const [currentTheme, setCurrentTheme] = useState<ThemeKey>('light-clean');
   const [nodeShape, setNodeShape] = useState<'rounded' | 'capsule' | 'rectangle'>('rounded');
   const [_edgeStyle, setEdgeStyle] = useState<'straight' | 'step' | 'smooth'>('straight');
   const [edgeAnimated, setEdgeAnimated] = useState(false);
   const [collaborationEnabled, setCollaborationEnabled] = useState(false);
   const [user, setUser] = useState<{ id: string; email?: string; name?: string; avatar?: string } | null>(null);
+  const [importNotesOpen, setImportNotesOpen] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const undoStack = useRef<Array<{ nodes: Node[]; edges: Edge[]; title: string }>>([]);
   const redoStack = useRef<Array<{ nodes: Node[]; edges: Edge[]; title: string }>>([]);
@@ -377,7 +381,7 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
   );
 
   // Theme presets and helpers
-  const themePresets: Record<typeof currentTheme, { node: { bg: string; border: string; text: string }; edge: { color: string }; canvas: { background: { variant: BackgroundVariant; gap: number; size: number } } }> = {
+  const themePresets: Record<ThemeKey, { node: { bg: string; border: string; text: string }; edge: { color: string }; canvas: { background: { variant: BackgroundVariant; gap: number; size: number } } }> = {
     'light-clean': {
       node: { bg: '#ffffff', border: '#e2e8f0', text: '#0f172a' },
       edge: { color: '#94a3b8' },
@@ -398,6 +402,26 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
       edge: { color: '#06b6d4' },
       canvas: { background: { variant: BackgroundVariant.Dots, gap: 14, size: 1 } },
     },
+    'sunset': {
+      node: { bg: '#fff1f2', border: '#fb7185', text: '#7f1d1d' },
+      edge: { color: '#fb7185' },
+      canvas: { background: { variant: BackgroundVariant.Dots, gap: 14, size: 1 } },
+    },
+    'forest': {
+      node: { bg: '#ecfdf5', border: '#10b981', text: '#064e3b' },
+      edge: { color: '#10b981' },
+      canvas: { background: { variant: BackgroundVariant.Dots, gap: 14, size: 1 } },
+    },
+    'grape': {
+      node: { bg: '#f5f3ff', border: '#8b5cf6', text: '#2e1065' },
+      edge: { color: '#8b5cf6' },
+      canvas: { background: { variant: BackgroundVariant.Dots, gap: 14, size: 1 } },
+    },
+    'rose': {
+      node: { bg: '#fff1f2', border: '#f43f5e', text: '#881337' },
+      edge: { color: '#f43f5e' },
+      canvas: { background: { variant: BackgroundVariant.Dots, gap: 14, size: 1 } },
+    },
   } as const;
 
   const shapeToRadius: Record<typeof nodeShape, string> = {
@@ -406,7 +430,7 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
     rectangle: '4px',
   };
 
-  const applyTheme = (key: typeof currentTheme) => {
+  const applyTheme = (key: ThemeKey) => {
     pushUndo();
     setCurrentTheme(key);
     const preset = themePresets[key];
@@ -414,19 +438,20 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
       ...n,
       style: {
         ...n.style,
-        backgroundColor: n.style?.backgroundColor ?? preset.node.bg,
+        // Always override to ensure visible theme change
+        backgroundColor: preset.node.bg,
         border: `2px solid ${preset.node.border}`,
         borderRadius: shapeToRadius[nodeShape],
-        padding: n.style?.padding ?? '10px',
+        padding: '10px',
       },
       data: {
         ...n.data,
-        color: n.data?.color ?? preset.node.text,
+        color: preset.node.text,
       }
     })));
     setEdges(prev => prev.map(e => ({
       ...e,
-      style: { ...(e.style || {}), stroke: e.style?.stroke || preset.edge.color },
+      style: { ...(e.style || {}), stroke: preset.edge.color },
     })));
   };
 
@@ -550,6 +575,121 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
     };
     addNodeWithBroadcast(newNode);
     toast.success('Code node added');
+  };
+
+  // Import notes as canvas nodes
+  const handleImportNotes = (notes: Array<{
+    id: number;
+    summary: string;
+    takeaways: string[];
+    actions: Array<{ task: string; datetime?: string | null }>;
+  }>) => {
+    if (notes.length === 0) return;
+    
+    pushUndo();
+    
+    const newNodes: Node[] = [];
+    const newEdges: Edge[] = [];
+    
+    // Layout notes in a grid
+    const cols = Math.ceil(Math.sqrt(notes.length));
+    const spacing = 300;
+    const startX = 100;
+    const startY = 100;
+    
+    notes.forEach((note, index) => {
+      const row = Math.floor(index / cols);
+      const col = index % cols;
+      const x = startX + col * spacing;
+      const y = startY + row * spacing;
+      
+      // Main summary node
+      const summaryNodeId = `note-${note.id}-summary`;
+      newNodes.push({
+        id: summaryNodeId,
+        type: 'default',
+        position: { x, y },
+        data: { 
+          label: note.summary,
+        },
+        style: {
+          backgroundColor: '#ffffff', // will be overridden by theme apply if user changes theme
+          border: '2px solid #3b82f6',
+          borderRadius: shapeToRadius[nodeShape],
+          padding: '12px',
+          width: 250,
+          minHeight: 80,
+        },
+      });
+      
+      // Takeaways nodes (below summary)
+      note.takeaways?.forEach((takeaway, tIdx) => {
+        const takeawayId = `note-${note.id}-takeaway-${tIdx}`;
+        newNodes.push({
+          id: takeawayId,
+          type: 'default',
+          position: { 
+            x: x - 100 + tIdx * 120, 
+            y: y + 120 
+          },
+          data: { label: takeaway },
+          style: {
+            backgroundColor: '#fff7ed',
+            border: '2px solid #fb923c',
+            borderRadius: shapeToRadius[nodeShape],
+            padding: '10px',
+            width: 220,
+            fontSize: '12px',
+          },
+        });
+        
+        // Connect summary to takeaway
+        newEdges.push({
+          id: `edge-${summaryNodeId}-${takeawayId}`,
+          source: summaryNodeId,
+          target: takeawayId,
+          type: 'smoothstep',
+          style: { stroke: '#f59e0b' },
+        });
+      });
+      
+      // Action nodes (to the right of summary)
+      note.actions?.forEach((action, aIdx) => {
+        const actionId = `note-${note.id}-action-${aIdx}`;
+        newNodes.push({
+          id: actionId,
+          type: 'default',
+          position: { 
+            x: x + 280, 
+            y: y + aIdx * 80 
+          },
+          data: { label: action.task },
+          style: {
+            backgroundColor: '#f0fdf4',
+            border: '2px solid #22c55e',
+            borderRadius: shapeToRadius[nodeShape],
+            padding: '8px',
+            width: 180,
+            fontSize: '12px',
+          },
+        });
+        
+        // Connect summary to action
+        newEdges.push({
+          id: `edge-${summaryNodeId}-${actionId}`,
+          source: summaryNodeId,
+          target: actionId,
+          type: 'smoothstep',
+          style: { stroke: '#22c55e' },
+        });
+      });
+    });
+    
+    setNodes(prev => [...prev, ...newNodes]);
+    setEdges(prev => [...prev, ...newEdges]);
+    
+    // Fit view to show all nodes
+    setTimeout(() => fitView({ padding: 0.2 }), 100);
   };
 
   const handleAutoLayout = (layoutType: LayoutType) => {
@@ -1055,6 +1195,10 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
               <DropdownMenuItem onClick={() => applyTheme('dark-slate')}>Dark Slate</DropdownMenuItem>
               <DropdownMenuItem onClick={() => applyTheme('mind-map')}>Mind Map</DropdownMenuItem>
               <DropdownMenuItem onClick={() => applyTheme('ocean')}>Ocean</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => applyTheme('sunset')}>Sunset</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => applyTheme('forest')}>Forest</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => applyTheme('grape')}>Grape</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => applyTheme('rose')}>Rose</DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>Node Shape</DropdownMenuLabel>
               <DropdownMenuItem onClick={() => applyNodeShape('rounded')}>
@@ -1131,6 +1275,16 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
               Load Template
             </Button>
           </CanvasTemplateSelector>
+
+          {/* Import Notes */}
+          <Button 
+            variant="outline" 
+            size="sm"
+            onClick={() => setImportNotesOpen(true)}
+          >
+            <FileText className="h-4 w-4 mr-2" />
+            Import Notes
+          </Button>
 
           <CanvasTemplateSaveDialog
             nodes={nodes}
@@ -1349,6 +1503,18 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
             <CommandItem onSelect={() => { applyTheme('ocean'); setCommandOpen(false); }}>
               Theme: Ocean
             </CommandItem>
+            <CommandItem onSelect={() => { applyTheme('sunset'); setCommandOpen(false); }}>
+              Theme: Sunset
+            </CommandItem>
+            <CommandItem onSelect={() => { applyTheme('forest'); setCommandOpen(false); }}>
+              Theme: Forest
+            </CommandItem>
+            <CommandItem onSelect={() => { applyTheme('grape'); setCommandOpen(false); }}>
+              Theme: Grape
+            </CommandItem>
+            <CommandItem onSelect={() => { applyTheme('rose'); setCommandOpen(false); }}>
+              Theme: Rose
+            </CommandItem>
             <CommandItem onSelect={() => { applyNodeShape('rounded'); setCommandOpen(false); }}>
               Node Shape: Rounded
             </CommandItem>
@@ -1412,6 +1578,14 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
         suggestions={currentSuggestions}
         onAddConcept={handleAddSuggestedConcept}
         onAddConnection={handleAddSuggestedConnection}
+      />
+
+      {/* Import Notes Dialog */}
+      <ImportNotesDialog
+        open={importNotesOpen}
+        onOpenChange={setImportNotesOpen}
+        onImport={handleImportNotes}
+        workspaceId={workspaceId}
       />
     </div>
   );

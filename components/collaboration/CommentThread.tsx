@@ -11,7 +11,7 @@ import type { Comment } from '@/lib/realtime/types';
 interface CommentThreadProps {
   comments: Comment[];
   currentUserId: string;
-  onAddComment: (data: { content: string; parent_id?: number; mentions: string[] }) => void;
+  onAddComment: (data: { content: string; parent_id?: number; mentions: string[] }) => Promise<{ data?: unknown; error?: unknown }>;
   onResolve: (commentId: number) => void;
 }
 
@@ -24,6 +24,8 @@ export function CommentThread({
   const [newComment, setNewComment] = useState('');
   const [replyingTo, setReplyingTo] = useState<number | null>(null);
   const [replyContent, setReplyContent] = useState('');
+  const [isPosting, setIsPosting] = useState(false);
+  const [isReplyPosting, setIsReplyPosting] = useState<number | null>(null);
 
   // Organize comments into threads
   const rootComments = comments.filter((c) => !c.parent_id);
@@ -40,21 +42,41 @@ export function CommentThread({
     return mentions;
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!newComment.trim()) return;
-    
-    const mentions = extractMentions(newComment);
-    onAddComment({ content: newComment, mentions });
-    setNewComment('');
+    if (isPosting) return; // prevent double submit
+
+    setIsPosting(true);
+    try {
+      const mentions = extractMentions(newComment);
+      const res = await onAddComment({ content: newComment, mentions });
+      if (res && !res.error) {
+        setNewComment('');
+      } else {
+        // keep the content so user can retry
+      }
+    } finally {
+      setIsPosting(false);
+    }
   };
 
-  const handleReply = (parentId: number) => {
+  const handleReply = async (parentId: number) => {
     if (!replyContent.trim()) return;
-    
-    const mentions = extractMentions(replyContent);
-    onAddComment({ content: replyContent, parent_id: parentId, mentions });
-    setReplyContent('');
-    setReplyingTo(null);
+    if (isReplyPosting) return;
+
+    setIsReplyPosting(parentId);
+    try {
+      const mentions = extractMentions(replyContent);
+      const res = await onAddComment({ content: replyContent, parent_id: parentId, mentions });
+      if (res && !res.error) {
+        setReplyContent('');
+        setReplyingTo(null);
+      } else {
+        // keep reply content so user can retry
+      }
+    } finally {
+      setIsReplyPosting(null);
+    }
   };
 
   const getUserInitials = (name?: string, email?: string) => {
@@ -133,8 +155,8 @@ export function CommentThread({
               className="min-h-[60px]"
             />
             <div className="flex flex-col gap-1">
-              <Button size="sm" onClick={() => handleReply(comment.id)}>
-                Post Reply
+              <Button size="sm" onClick={() => handleReply(comment.id)} disabled={isReplyPosting === comment.id}>
+                {isReplyPosting === comment.id ? 'Posting…' : 'Post Reply'}
               </Button>
               <Button
                 size="sm"
@@ -170,9 +192,9 @@ export function CommentThread({
         />
         <Button
           onClick={handleSubmit}
-          disabled={!newComment.trim()}
+          disabled={!newComment.trim() || isPosting}
         >
-          Post
+          {isPosting ? 'Posting…' : 'Post'}
         </Button>
       </div>
       

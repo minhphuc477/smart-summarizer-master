@@ -20,6 +20,7 @@ interface SummarizerState {
   urlInput: string;
   urlError: string | null;
   isValidUrl: boolean;
+  urlContentSource: 'webpage' | 'youtube-transcript' | 'youtube-metadata' | null;
   remainingUses: number;
   selectedFolderId: number | null;
   selectedWorkspaceId: string | null;
@@ -38,6 +39,7 @@ interface SummarizerState {
   clearResult: () => void;
   setErrorState: (msg: string | null) => void;
   setResultState: (res: SummaryResult | null) => void;
+  setUrlContentSource: (src: 'webpage' | 'youtube-transcript' | 'youtube-metadata' | null) => void;
 }
 
 export const useSummarizerStore = create<SummarizerState>((set, get) => ({
@@ -50,6 +52,7 @@ export const useSummarizerStore = create<SummarizerState>((set, get) => ({
   urlInput: '',
   urlError: null,
   isValidUrl: false,
+  urlContentSource: null,
   remainingUses: 5,
   selectedFolderId: null,
   selectedWorkspaceId: null,
@@ -84,6 +87,7 @@ export const useSummarizerStore = create<SummarizerState>((set, get) => ({
   clearResult: () => set({ result: null }),
   setErrorState: (msg) => set({ error: msg }),
   setResultState: (res) => set({ result: res }),
+  setUrlContentSource: (src) => set({ urlContentSource: src }),
 
   submitNotes: async () => {
     const { notes, customPersona, isGuestMode, session, selectedFolderId, selectedWorkspaceId } = get();
@@ -114,8 +118,9 @@ export const useSummarizerStore = create<SummarizerState>((set, get) => ({
         // Friendly generic error message for failed summarize
         throw new Error('Something went wrong');
       }
-      const data: SummaryResult = await response.json();
-      set({ result: data });
+    const data: SummaryResult = await response.json();
+    // Optimistically clear loading so UI updates immediately for tests and users
+    set({ result: data, urlContentSource: null, isLoading: false });
       if (isGuestMode) {
         incrementGuestUsage();
         addGuestNote({
@@ -159,7 +164,8 @@ export const useSummarizerStore = create<SummarizerState>((set, get) => ({
         throw new Error('Something went wrong');
       }
       const data: SummaryResult = await response.json();
-      set({ result: data });
+      const srcHeader = response.headers.get('x-content-source') as 'webpage' | 'youtube-transcript' | 'youtube-metadata' | null;
+  set({ result: data, urlContentSource: srcHeader, isLoading: false });
       if (isGuestMode) {
         incrementGuestUsage();
         addGuestNote({
@@ -174,6 +180,7 @@ export const useSummarizerStore = create<SummarizerState>((set, get) => ({
         set({ remainingUses: getRemainingUsage() });
       } else {
         // Persist summarized URL content
+        // Persist summarized URL as a note; embedding auto-triggered server-side
         await fetch('/api/summarize', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -183,7 +190,6 @@ export const useSummarizerStore = create<SummarizerState>((set, get) => ({
             userId: session?.user.id,
             folderId: selectedFolderId,
             workspaceId: selectedWorkspaceId,
-            result: data,
           }),
         }).catch(() => {});
       }
