@@ -67,36 +67,55 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Prepare text for summarization with page references
-    const textWithPages = pdfDoc.pages
-      .map((page: { page: number; text: string }) => {
-        return `--- Page ${page.page} ---\n${page.text}`;
-      })
-      .join('\n\n');
-
-    // If text is too long, chunk it intelligently
-    let textToSummarize = textWithPages;
+    // Prepare text for summarization
+    let textToSummarize = pdfDoc.full_text;
     let isChunked = false;
 
-    if (textWithPages.length > MAX_CHUNK_SIZE) {
-      isChunked = true;
-      // For very long documents, summarize first and last pages plus a sample from the middle
-      const firstPages = pdfDoc.pages.slice(0, 3);
-      const middleIndex = Math.floor(pdfDoc.pages.length / 2);
-      const middlePages = pdfDoc.pages.slice(middleIndex - 1, middleIndex + 2);
-      const lastPages = pdfDoc.pages.slice(-3);
-
-      textToSummarize = [
-        ...firstPages,
-        { page: '...', text: '[Content continues...]' },
-        ...middlePages,
-        { page: '...', text: '[Content continues...]' },
-        ...lastPages,
-      ]
-        .map((page: { page: number | string; text: string }) => {
+    // If PDF has page-by-page data, use it for better context
+    if (pdfDoc.pages && Array.isArray(pdfDoc.pages) && pdfDoc.pages.length > 0) {
+      const textWithPages = pdfDoc.pages
+        .map((page: { page: number; text: string }) => {
           return `--- Page ${page.page} ---\n${page.text}`;
         })
         .join('\n\n');
+
+      // If text is too long, chunk it intelligently
+      if (textWithPages.length > MAX_CHUNK_SIZE) {
+        isChunked = true;
+        // For very long documents, summarize first and last pages plus a sample from the middle
+        const firstPages = pdfDoc.pages.slice(0, 3);
+        const middleIndex = Math.floor(pdfDoc.pages.length / 2);
+        const middlePages = pdfDoc.pages.slice(middleIndex - 1, middleIndex + 2);
+        const lastPages = pdfDoc.pages.slice(-3);
+
+        textToSummarize = [
+          ...firstPages,
+          { page: '...', text: '[Content continues...]' },
+          ...middlePages,
+          { page: '...', text: '[Content continues...]' },
+          ...lastPages,
+        ]
+          .map((page: { page: number | string; text: string }) => {
+            return `--- Page ${page.page} ---\n${page.text}`;
+          })
+          .join('\n\n');
+      } else {
+        textToSummarize = textWithPages;
+      }
+    } else {
+      // No page data, just use full_text and chunk if needed
+      if (pdfDoc.full_text.length > MAX_CHUNK_SIZE) {
+        isChunked = true;
+        // Take first and last portions of text
+        const chunkSize = Math.floor(MAX_CHUNK_SIZE / 3);
+        const start = pdfDoc.full_text.substring(0, chunkSize);
+        const middle = pdfDoc.full_text.substring(
+          Math.floor(pdfDoc.full_text.length / 2) - Math.floor(chunkSize / 2),
+          Math.floor(pdfDoc.full_text.length / 2) + Math.floor(chunkSize / 2)
+        );
+        const end = pdfDoc.full_text.substring(pdfDoc.full_text.length - chunkSize);
+        textToSummarize = `${start}\n\n[...content continues...]\n\n${middle}\n\n[...content continues...]\n\n${end}`;
+      }
     }
 
     // Add document metadata to the text
@@ -131,7 +150,7 @@ ${textToSummarize}
       .select()
       .single();
 
-    if (noteError) {
+    if (noteError || !note) {
       console.error('Failed to create note:', noteError);
       logger.logResponse('POST', '/api/pdf/summarize', 500, Date.now() - startTime);
       return NextResponse.json(
@@ -140,36 +159,40 @@ ${textToSummarize}
       );
     }
 
-    // Create page references for key pages
+    console.log('[PDF Summarize] Created note:', note.id);
+
+    // Create page references for key pages (only if page data exists)
     const pageReferences = [];
-    for (const takeaway of summary.takeaways.slice(0, 5)) {
-      // Find which page(s) might contain this takeaway
-      const matchingPages = pdfDoc.pages.filter((page: { text: string }) =>
-        page.text.toLowerCase().includes(takeaway.toLowerCase().slice(0, 50))
-      );
+    if (pdfDoc.pages && Array.isArray(pdfDoc.pages) && pdfDoc.pages.length > 0) {
+      for (const takeaway of summary.takeaways.slice(0, 5)) {
+        // Find which page(s) might contain this takeaway
+        const matchingPages = pdfDoc.pages.filter((page: { text: string }) =>
+          page.text.toLowerCase().includes(takeaway.toLowerCase().slice(0, 50))
+        );
 
-      if (matchingPages.length > 0) {
-        const firstMatch = matchingPages[0];
-        // Extract a snippet around the match
-        const lowerText = firstMatch.text.toLowerCase();
-        const searchPhrase = takeaway.toLowerCase().slice(0, 50);
-        const matchIndex = lowerText.indexOf(searchPhrase);
+        if (matchingPages.length > 0) {
+          const firstMatch = matchingPages[0];
+          // Extract a snippet around the match
+          const lowerText = firstMatch.text.toLowerCase();
+          const searchPhrase = takeaway.toLowerCase().slice(0, 50);
+          const matchIndex = lowerText.indexOf(searchPhrase);
 
-        let snippet = '';
-        if (matchIndex !== -1) {
-          const start = Math.max(0, matchIndex - 50);
-          const end = Math.min(firstMatch.text.length, matchIndex + 150);
-          snippet = '...' + firstMatch.text.slice(start, end) + '...';
+          let snippet = '';
+          if (matchIndex !== -1) {
+            const start = Math.max(0, matchIndex - 50);
+            const end = Math.min(firstMatch.text.length, matchIndex + 150);
+            snippet = '...' + firstMatch.text.slice(start, end) + '...';
+          }
+
+          pageReferences.push({
+            note_id: note.id,
+            pdf_document_id: pdfId,
+            page_number: firstMatch.page,
+            snippet,
+            quote: takeaway.slice(0, 500),
+            position_in_note: pageReferences.length,
+          });
         }
-
-        pageReferences.push({
-          note_id: note.id,
-          pdf_document_id: pdfId,
-          page_number: firstMatch.page,
-          snippet,
-          quote: takeaway.slice(0, 500),
-          position_in_note: pageReferences.length,
-        });
       }
     }
 
@@ -224,15 +247,26 @@ ${textToSummarize}
       }
     }
 
-    // Trigger embedding generation (fire and forget)
+    // Trigger embedding generation (fire and forget) with text content to avoid auth issues
     const embeddingUrl = new URL('/api/generate-embedding', req.url);
-    fetch(embeddingUrl.toString(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ noteId: note.id }),
-    }).catch((error) => {
-      console.error('Failed to trigger embedding generation:', error);
-    });
+    const embeddingText = [
+      summary.summary,
+      ...(summary.takeaways || []),
+      `PDF: ${pdfDoc.original_filename}`
+    ].join('\n\n').slice(0, 5000);
+    
+    setTimeout(() => {
+      fetch(embeddingUrl.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          noteId: note.id,
+          text: embeddingText // Pass text directly to avoid DB lookup
+        }),
+      }).catch((error) => {
+        console.error('Failed to trigger embedding generation:', error);
+      });
+    }, 100); // Small delay to ensure note is committed to DB
 
     logger.logResponse('POST', '/api/pdf/summarize', 200, Date.now() - startTime);
     return NextResponse.json({

@@ -34,6 +34,17 @@ type Workspace = {
   folder_count: number;
 };
 
+// API response type (snake_case from database)
+type WorkspaceAPIResponse = {
+  workspace_id: string;
+  workspace_name: string;
+  workspace_description: string | null;
+  role: 'owner' | 'admin' | 'member';
+  member_count: number;
+  note_count: number;
+  folder_count: number;
+};
+
 type WorkspaceManagerProps = {
   selectedWorkspaceId: string | null;
   onWorkspaceChange: (workspaceId: string | null) => void;
@@ -57,6 +68,14 @@ function WorkspaceManager({
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newWorkspace, setNewWorkspace] = useState({ name: '', description: '' });
   const [error, setError] = useState<string | null>(null);
+
+  // Clear create form error feedback when the dialog opens/closes or inputs change.
+  useEffect(() => {
+    if (!createDialogOpen) {
+      setError(null);
+      setNewWorkspace({ name: '', description: '' });
+    }
+  }, [createDialogOpen]);
   const selected = useMemo(() => workspaces.find(w => w.id === selectedWorkspaceId) || null, [workspaces, selectedWorkspaceId]);
 
   // After changing selection, scroll the info panel into view for quick confirmation
@@ -69,19 +88,17 @@ function WorkspaceManager({
     }
   }, [selectedWorkspaceId]);
 
-  // Determine whether we should render the static "personal" option.
-  // If the backend already returns a workspace named like the personal workspace,
-  // don't render the duplicate static item.
-  const showPersonalItem = !workspaces.some(w => {
-    const name = (w.name || '').toLowerCase();
-    return name.includes('personal') || name.includes('personal (private)');
-  });
+  // Always render the static "Personal (Private)" option so users can switch back
+  // to personal notes even if there exists a similarly named workspace.
 
   // Fetch workspaces
   const fetchWorkspaces = async () => {
     // Guard: components should pass valid data, but be defensive
     try {
+      console.log('[WorkspaceManager] Fetching workspaces...');
       const response = await fetch('/api/workspaces');
+      console.log('[WorkspaceManager] Response status:', response.status);
+      
       if (!response.ok) {
         // Don't show error toast for 401 (user not authenticated yet)
         if (response.status === 401) {
@@ -92,9 +109,24 @@ function WorkspaceManager({
       }
       
       const data = await response.json();
-      setWorkspaces(data.workspaces || []);
+      console.log('[WorkspaceManager] Received data:', data);
+      console.log('[WorkspaceManager] Workspaces count:', data.workspaces?.length || 0);
+      
+      // Map API response (workspace_id, workspace_name) to component interface (id, name)
+      const mappedWorkspaces = (data.workspaces || []).map((ws: WorkspaceAPIResponse) => ({
+        id: ws.workspace_id,
+        name: ws.workspace_name,
+        description: ws.workspace_description,
+        role: ws.role,
+        member_count: ws.member_count || 0,
+        note_count: ws.note_count || 0,
+        folder_count: ws.folder_count || 0,
+      }));
+      console.log('[WorkspaceManager] Mapped workspaces:', mappedWorkspaces);
+      
+      setWorkspaces(mappedWorkspaces);
     } catch (err) {
-      console.error('Error fetching workspaces:', err);
+      console.error('[WorkspaceManager] Error fetching workspaces:', err);
       setError('Failed to load workspaces');
       toast.error('Failed to load workspaces');
     } finally {
@@ -113,8 +145,8 @@ function WorkspaceManager({
       setError('Workspace name is required');
       return;
     }
-    // Client-side duplicate pre-check (case-insensitive)
-    const exists = workspaces.some(w => w.name.toLowerCase() === newWorkspace.name.trim().toLowerCase());
+  // Client-side duplicate pre-check (case-insensitive) — defensive for missing names
+  const exists = workspaces.some(w => (String(w.name || '')).toLowerCase() === newWorkspace.name.trim().toLowerCase());
     if (exists) {
       setError('You already have a workspace with this name');
       toast.error('Duplicate workspace name');
@@ -198,39 +230,46 @@ function WorkspaceManager({
               <div className="flex items-center gap-2">
                 {getRoleIcon(selected?.role)}
                 <span>{selected?.name || 'Workspace'}</span>
-                {!!selected?.member_count && (
+                {selected?.member_count !== undefined && selected.member_count > 1 && (
                   <span className="text-xs text-muted-foreground">
-                    ({selected?.member_count} members)
+                    ({selected.member_count} {selected.member_count === 1 ? 'member' : 'members'})
                   </span>
                 )}
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <span>📁</span>
+                <User className="h-4 w-4 text-muted-foreground" />
                 <span>Personal (Private)</span>
               </div>
             )}
           </SelectTrigger>
           <SelectContent>
-            {showPersonalItem && (
-              <SelectItem value="personal">
-                <div className="flex items-center gap-2">
-                  <span>📁</span>
-                  <span>Personal (Private)</span>
-                </div>
-              </SelectItem>
-            )}
-            {workspaces.map((workspace, idx) => (
-              <SelectItem key={`${workspace.id || 'ws'}-${idx}`} value={workspace.id}>
-                <div className="flex items-center gap-2">
-                  {getRoleIcon(workspace.role)}
-                  <span>{workspace.name}</span>
-                  <span className="text-xs text-muted-foreground">
-                    ({workspace.member_count} members)
-                  </span>
-                </div>
-              </SelectItem>
-            ))}
+            <SelectItem value="personal">
+              <div className="flex items-center gap-2">
+                <User className="h-4 w-4 text-muted-foreground" />
+                <span>Personal (Private)</span>
+              </div>
+            </SelectItem>
+            {(() => {
+              console.log('[WorkspaceManager] Rendering workspaces, count:', workspaces.length);
+              console.log('[WorkspaceManager] Workspaces:', workspaces);
+              return workspaces.map((workspace, idx) => {
+                console.log('[WorkspaceManager] Rendering workspace:', workspace.id, workspace.name);
+                return (
+                  <SelectItem key={`${workspace.id || 'ws'}-${idx}`} value={workspace.id}>
+                    <div className="flex items-center gap-2">
+                      {getRoleIcon(workspace.role)}
+                      <span>{workspace.name}</span>
+                      {workspace.member_count > 1 && (
+                        <span className="text-xs text-muted-foreground">
+                          ({workspace.member_count} {workspace.member_count === 1 ? 'member' : 'members'})
+                        </span>
+                      )}
+                    </div>
+                  </SelectItem>
+                );
+              });
+            })()}
           </SelectContent>
         </Select>
       </div>
@@ -258,7 +297,11 @@ function WorkspaceManager({
                 <Input
                   placeholder="e.g., Marketing Team"
                   value={newWorkspace.name}
-                  onChange={(e) => setNewWorkspace({ ...newWorkspace, name: e.target.value })}
+                  onChange={(e) => {
+                    setNewWorkspace({ ...newWorkspace, name: e.target.value });
+                    if (error) setError(null);
+                  }}
+                  aria-label="New workspace name"
                 />
               </div>
               <div>
@@ -266,8 +309,12 @@ function WorkspaceManager({
                 <Textarea
                   placeholder="What is this workspace for?"
                   value={newWorkspace.description}
-                  onChange={(e) => setNewWorkspace({ ...newWorkspace, description: e.target.value })}
+                  onChange={(e) => {
+                    setNewWorkspace({ ...newWorkspace, description: e.target.value });
+                    if (error) setError(null);
+                  }}
                   rows={3}
+                  aria-label="New workspace description"
                 />
               </div>
             </div>

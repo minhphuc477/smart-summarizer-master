@@ -28,14 +28,21 @@ export interface PdfJobRecord {
 }
 
 export async function enqueuePdfJob(pdfId: string, userId: string, wantsSummary = true) {
-  // Insert into queue if not exists (unique constraint on pdf_document_id)
-  const { error } = await supabaseAdmin.from('pdf_processing_queue').upsert({
+  // First, delete any existing queue entry for this PDF (handles re-uploads)
+  await supabaseAdmin
+    .from('pdf_processing_queue')
+    .delete()
+    .eq('pdf_document_id', pdfId);
+  
+  // Now insert fresh queue entry
+  const { error } = await supabaseAdmin.from('pdf_processing_queue').insert({
     pdf_document_id: pdfId,
     user_id: userId,
     status: 'pending',
     attempts: 0,
     wants_summary: wantsSummary,
   });
+  
   if (error) throw error;
   return { pdf_document_id: pdfId };
 }

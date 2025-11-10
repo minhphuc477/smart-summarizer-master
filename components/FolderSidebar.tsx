@@ -30,10 +30,11 @@ type FolderSidebarProps = {
   userId: string;
   onFolderSelect: (folderId: number | null) => void;
   selectedFolderId: number | null;
+  selectedWorkspaceId?: string | null;
 };
 
 
-export default function FolderSidebar({ userId: _userId, onFolderSelect, selectedFolderId }: FolderSidebarProps) {
+export default function FolderSidebar({ userId: _userId, onFolderSelect, selectedFolderId, selectedWorkspaceId }: FolderSidebarProps) {
   const [folders, setFolders] = useState<FolderType[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
@@ -71,7 +72,12 @@ export default function FolderSidebar({ userId: _userId, onFolderSelect, selecte
 
     try {
       setIsLoading(true);
-      const response = await fetch("/api/folders");
+      const params = new URLSearchParams();
+      if (selectedWorkspaceId) {
+        params.set('workspace_id', selectedWorkspaceId);
+      }
+      const url = `/api/folders${params.toString() ? `?${params.toString()}` : ''}`;
+      const response = await fetch(url);
       if (response.ok) {
         const data = await response.json();
         setFolders(data.folders || []);
@@ -82,7 +88,7 @@ export default function FolderSidebar({ userId: _userId, onFolderSelect, selecte
     } finally {
       setIsLoading(false);
     }
-  }, [_userId]);
+  }, [_userId, selectedWorkspaceId]);
 
   useEffect(() => {
     fetchFolders();

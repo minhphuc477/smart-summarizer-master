@@ -8,6 +8,10 @@ const withPWA = createNextPwa({
   disable: process.env.NODE_ENV === 'development' && process.env.PWA_DEV !== 'true',
   register: true,
   skipWaiting: true,
+  // Increase max file size for precaching to handle large source maps
+  runtimeCaching: [],
+  buildExcludes: [/\.map$/], // Exclude source maps from precaching
+  maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5MB limit
 });
 
 const nextConfig = {
@@ -15,6 +19,8 @@ const nextConfig = {
     // Temporarily ignore ESLint errors during builds to allow development
     ignoreDuringBuilds: true,
   },
+  // Externalize packages with native dependencies from server bundling
+  serverExternalPackages: ['@napi-rs/canvas', 'canvas', 'pdf-parse'],
 };
 
 // Wrap with Sentry config

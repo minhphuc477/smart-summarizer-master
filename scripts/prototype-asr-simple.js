@@ -33,7 +33,7 @@ async function run() {
     // Check for ffmpeg
     try {
       child_process.execSync('ffmpeg -version', { stdio: 'ignore' });
-    } catch (e) {
+    } catch (_e) {
       console.log('ffmpeg not available; MP3 saved at', mp3Path);
       process.exit(0);
     }

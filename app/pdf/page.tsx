@@ -11,6 +11,9 @@ import PDFManager from "@/components/PDFManager";
 import { Button } from "@/components/ui/button";
 import { LogOut } from "lucide-react";
 
+// Prevent static generation for this dynamic page
+export const dynamic = 'force-dynamic';
+
 export default function PDFPage() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);

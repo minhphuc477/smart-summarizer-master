@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Mic, MicOff } from 'lucide-react';
 import useVoiceInput from '@/lib/useVoiceInput';
@@ -26,12 +26,17 @@ export default function VoiceInputButton({
     resetTranscript,
   } = useVoiceInput();
 
+  // Use ref to track last sent transcript to avoid infinite loops
+  const lastTranscriptRef = useRef('');
+
   // Send transcript when it changes
   useEffect(() => {
-    if (transcript) {
+    if (transcript && transcript !== lastTranscriptRef.current) {
+      lastTranscriptRef.current = transcript;
       onTranscript(transcript);
     }
-  }, [transcript, onTranscript]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transcript]); // Only depend on transcript to avoid infinite loop when parent re-renders
 
   const handleToggle = () => {
     if (isListening) {

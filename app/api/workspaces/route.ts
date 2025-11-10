@@ -163,6 +163,22 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message || 'Failed to create workspace' }, { status: 500 });
     }
 
+    // Add owner as workspace member
+    const { error: memberError } = await supabase
+      .from('workspace_members')
+      .insert({
+        workspace_id: workspace.id,
+        user_id: user.id,
+        role: 'owner',
+      });
+
+    if (memberError) {
+      console.error('Error adding workspace owner as member:', memberError);
+      // Workspace was created but membership failed - try to clean up
+      await supabase.from('workspaces').delete().eq('id', workspace.id);
+      return NextResponse.json({ error: 'Failed to initialize workspace membership' }, { status: 500 });
+    }
+
     return NextResponse.json({ workspace }, { status: 201 });
   } catch (error) {
     console.error('Unexpected error:', error);

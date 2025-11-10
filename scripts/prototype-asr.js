@@ -42,7 +42,7 @@ async function run() {
     console.log('Download finished. Checking for ffmpeg...');
     try {
       child_process.execSync('ffmpeg -version', { stdio: 'ignore' });
-    } catch (e) {
+    } catch (_e) {
       console.error('\nffmpeg not found on PATH. To extract WAV, install ffmpeg and ensure it\'s on your PATH.');
       console.error('On Windows you can download from https://ffmpeg.org/download.html and add to PATH.');
       console.error('The downloaded MP3 is available at:', audioPath);

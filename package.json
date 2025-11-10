@@ -53,6 +53,7 @@
     "framer-motion": "^12.23.24",
     "groq-sdk": "^0.33.0",
     "i18next": "^25.6.0",
+  "html-to-image": "^1.11.11",
     "jsdom": "^27.0.0",
     "lucide-react": "^0.544.0",
     "next": "15.5.4",

@@ -69,6 +69,13 @@ export class RealtimeCollaboration {
       .single();
   }
 
+  async deleteComment(commentId: number) {
+    return this.supabase
+      .from('comments')
+      .delete()
+      .eq('id', commentId);
+  }
+
   async getComments() {
     return this.supabase
       .from('comments')

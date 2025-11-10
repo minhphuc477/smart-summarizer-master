@@ -117,6 +117,16 @@ if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = jest.fn();
 }
 
+// Mock ResizeObserver for Radix ScrollArea and other components
+if (typeof global.ResizeObserver === 'undefined') {
+  class ResizeObserverMock {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  global.ResizeObserver = ResizeObserverMock;
+}
+
 // Mock crypto.randomUUID and getRandomValues for crypto-js
 Object.defineProperty(global, 'crypto', {
   value: {

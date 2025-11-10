@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
+import { Trash2 } from 'lucide-react';
 import type { Comment } from '@/lib/realtime/types';
 
 interface CommentThreadProps {
@@ -13,6 +14,7 @@ interface CommentThreadProps {
   currentUserId: string;
   onAddComment: (data: { content: string; parent_id?: number; mentions: string[] }) => Promise<{ data?: unknown; error?: unknown }>;
   onResolve: (commentId: number) => void;
+  onDelete?: (commentId: number) => void;
 }
 
 export function CommentThread({
@@ -20,6 +22,7 @@ export function CommentThread({
   currentUserId,
   onAddComment,
   onResolve,
+  onDelete,
 }: CommentThreadProps) {
   const [newComment, setNewComment] = useState('');
   const [replyingTo, setReplyingTo] = useState<number | null>(null);
@@ -142,6 +145,18 @@ export function CommentThread({
               onClick={() => onResolve(comment.id)}
             >
               Resolve
+            </Button>
+          )}
+          
+          {comment.user_id === currentUserId && onDelete && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onDelete(comment.id)}
+              className="text-destructive hover:text-destructive"
+            >
+              <Trash2 className="h-4 w-4 mr-1" />
+              Delete
             </Button>
           )}
         </div>

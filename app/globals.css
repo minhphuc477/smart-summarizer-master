@@ -119,4 +119,26 @@
   body {
     @apply bg-background text-foreground;
   }
+  
+  /* Fix text selection visibility in dark mode */
+  .dark ::selection {
+    background-color: oklch(0.488 0.243 264.376 / 0.5); /* primary color with opacity */
+    color: oklch(1 0 0); /* white text */
+  }
+  
+  .dark ::-moz-selection {
+    background-color: oklch(0.488 0.243 264.376 / 0.5); /* primary color with opacity */
+    color: oklch(1 0 0); /* white text */
+  }
+  
+  /* Also fix for light mode */
+  ::selection {
+    background-color: oklch(0.205 0 0 / 0.2); /* dark primary with opacity */
+    color: oklch(0.145 0 0); /* dark foreground */
+  }
+  
+  ::-moz-selection {
+    background-color: oklch(0.205 0 0 / 0.2); /* dark primary with opacity */
+    color: oklch(0.145 0 0); /* dark foreground */
+  }
 }

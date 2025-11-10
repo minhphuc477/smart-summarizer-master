@@ -16,7 +16,17 @@ import {
   XCircle, 
   Trash2,
   Eye,
-  AlertCircle
+  AlertCircle,
+  Clock,
+  Zap,
+  ListChecks,
+  Target,
+  Hash,
+  Smile,
+  Meh,
+  Frown,
+  Calendar,
+  X
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { createResumableUpload, ResumableUpload } from '@/lib/resumableUpload';
@@ -32,10 +42,21 @@ interface PDFDocument {
   full_text?: string;
   summary?: string;
   summary_text?: string; // async summary storage
+  summaryData?: PDFSummary; // full structured summary data
   page_count?: number;
   created_at: string;
   error_message?: string;
   processing_error?: string;
+}
+
+interface PDFSummary {
+  summary: string;
+  takeaways: string[];
+  actions: Array<{ task: string; datetime?: string }>;
+  sentiment: string;
+  tags: string[];
+  page_references: number;
+  note_id?: number;
 }
 
 interface PDFManagerProps {
@@ -59,6 +80,17 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
   const [loading, setLoading] = useState(true);
   const [selectedPdf, setSelectedPdf] = useState<PDFDocument | null>(null);
   const [summarizing, setSummarizing] = useState<string | null>(null);
+  const pollIntervalRef = useRef<number | null>(null);
+  const [nowTs, setNowTs] = useState<number>(Date.now());
+
+  // Helper to compute a human-friendly elapsed time string (used for pending/processing durations)
+  const formatElapsed = (sinceIso: string) => {
+    const since = new Date(sinceIso).getTime();
+    const secs = Math.max(0, Math.floor((nowTs - since) / 1000));
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m > 0 ? m + 'm ' : ''}${s}s`;
+  };
 
   const fetchPDFs = useCallback(async () => {
     if (!session) return;
@@ -83,6 +115,40 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
   useEffect(() => {
     fetchPDFs();
   }, [fetchPDFs]);
+
+  // Global polling: refresh status for any pending/processing PDFs every 10s
+  useEffect(() => {
+    // Clear previous interval (if any)
+    if (pollIntervalRef.current) {
+      window.clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    // Only start if user has any non-terminal PDFs
+    const hasActive = pdfs.some(p => p.status === 'pending' || p.status === 'processing' || p.status === 'uploading');
+    if (!hasActive) return;
+
+    const id = window.setInterval(async () => {
+      const active = pdfs.filter(p => p.status === 'pending' || p.status === 'processing');
+      for (const p of active) {
+        await refreshPdfStatus(p.id);
+      }
+    }, 10000);
+    pollIntervalRef.current = id;
+    return () => {
+      if (pollIntervalRef.current) {
+        window.clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+  }, [pdfs]);
+
+  // Heartbeat to update elapsed time labels once per second when active
+  useEffect(() => {
+    const hasActive = pdfs.some(p => p.status === 'pending' || p.status === 'processing');
+    if (!hasActive) return;
+    const id = window.setInterval(() => setNowTs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [pdfs]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -117,46 +183,67 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
       if (selectedWorkspaceId) formData.append('workspace_id', selectedWorkspaceId);
       if (selectedFolderId) formData.append('folder_id', selectedFolderId.toString());
 
-      // If large file (> 8MB) use resumable tus upload directly to storage
+      // If large file (> 8MB) try resumable tus upload directly to storage
       if (selectedFile.size > 8 * 1024 * 1024) {
-        setResumable(true);
-        const ru = createResumableUpload({
-          file: selectedFile,
-          supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        try {
+          setResumable(true);
+          const ru = createResumableUpload({
+            file: selectedFile,
+            supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
             supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-          bucket: 'pdf-documents',
-          userId: session.user.id,
-          onProgress: (uploaded, total) => {
-            const pct = Math.round((uploaded / total) * 100);
-            setUploadProgress(pct);
-          },
-          onEta: (secs) => {
-            if (!isFinite(secs)) return;
-            const m = Math.floor(secs / 60);
-            const s = Math.round(secs % 60);
-            setUploadEta(`${m > 0 ? m + 'm ' : ''}${s}s remaining`);
-          },
-          onComplete: async () => {
-            setUploadProgress(100);
-            setUploadEta('Finalizing...');
-            // After tus completes, still create DB record via existing API (lightweight zero-byte insert path)
-            const response = await fetch('/api/pdf/upload', { method: 'POST', body: formData });
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(data.error || 'Upload record creation failed');
-            const uploadedId = data?.pdf?.id;
-            if (uploadedId) await requestProcessing(uploadedId);
-            await fetchPDFs();
-            setSuccess('PDF uploaded via resumable upload. Queued for processing...');
-            setSelectedFile(null);
-            setResumable(false);
-          },
-          onError: (err) => {
-            setError(err.message);
-          }
-        });
-        resumableRef.current = ru;
-        void ru.startOrResume();
-        return; // exit standard flow
+            bucket: 'pdf-documents',
+            userId: session.user.id,
+            onProgress: (uploaded, total) => {
+              const pct = Math.round((uploaded / total) * 100);
+              setUploadProgress(pct);
+            },
+            onEta: (secs) => {
+              if (!isFinite(secs)) return;
+              const m = Math.floor(secs / 60);
+              const s = Math.round(secs % 60);
+              setUploadEta(`${m > 0 ? m + 'm ' : ''}${s}s remaining`);
+            },
+            onComplete: async () => {
+              setUploadProgress(100);
+              setUploadEta('Finalizing...');
+              // After tus completes, still create DB record via existing API (lightweight zero-byte insert path)
+              const response = await fetch('/api/pdf/upload', { method: 'POST', body: formData });
+              const data = await response.json().catch(() => ({}));
+              if (!response.ok) throw new Error(data.error || 'Upload record creation failed');
+              const uploadedId = data?.pdf?.id;
+              if (uploadedId) await requestProcessing(uploadedId);
+              await fetchPDFs();
+              setSuccess('PDF uploaded via resumable upload. Queued for processing...');
+              setSelectedFile(null);
+              setResumable(false);
+            },
+            onError: (err) => {
+              console.error('Resumable upload error:', err);
+              // Check for common Supabase Storage errors
+              const errorMsg = err.message || '';
+              let fallbackMsg = `Resumable upload failed: ${err.message}`;
+              
+              if (errorMsg.includes('404') || errorMsg.includes('bucket')) {
+                fallbackMsg = 'Storage bucket not configured. Using standard upload instead.';
+              } else if (errorMsg.includes('401') || errorMsg.includes('403')) {
+                fallbackMsg = 'Storage permissions issue. Using standard upload instead.';
+              }
+              
+              setError(fallbackMsg);
+              setResumable(false);
+              // Fall through to standard upload below - will be handled by continuing the function
+            }
+          });
+          resumableRef.current = ru;
+          await ru.startOrResume();
+          return; // exit if resumable succeeds
+        } catch (resumableError) {
+          console.error('Failed to start resumable upload:', resumableError);
+          const errMsg = resumableError instanceof Error ? resumableError.message : 'Unknown error';
+          setError(`Resumable upload unavailable (${errMsg}). Using standard upload...`);
+          setResumable(false);
+          // Fall through to standard upload
+        }
       }
 
       const startTime = Date.now();
@@ -262,6 +349,11 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || 'Failed to enqueue processing');
       }
+      const responseData = await response.json();
+      // Immediately update local state to reflect pending status
+      if (responseData.status) {
+        setPdfs(prev => prev.map(p => p.id === pdfId ? { ...p, status: responseData.status } : p));
+      }
       // Begin polling status until processing or completed
       pollStatus(pdfId);
     } catch (err) {
@@ -290,6 +382,59 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
       }
     }, 5000);
   };
+
+  // Manual single-status refresh
+  const refreshPdfStatus = async (pdfId: string) => {
+    try {
+      const res = await fetch(`/api/pdf/status/${pdfId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const updated: PDFDocument | undefined = data.pdf;
+      if (updated) {
+        setPdfs(prev => prev.map(p => p.id === pdfId ? { ...p, ...updated } : p));
+      }
+    } catch {
+      // noop
+    }
+  };
+
+  // Manual processing trigger (doesn't require background worker)
+  const handleProcessNow = async (pdfId: string) => {
+    setError(null);
+    setSuccess(null);
+    
+    // Optimistically update status
+    setPdfs(prev => prev.map(p => p.id === pdfId ? { ...p, status: 'processing' } : p));
+
+    try {
+      const response = await fetch('/api/pdf/process-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdf_id: pdfId }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Processing failed');
+      }
+
+      setSuccess(data.message || 'PDF processed successfully!');
+      
+      // Update PDF with latest data
+      if (data.pdf) {
+        setPdfs(prev => prev.map(p => p.id === pdfId ? { ...p, ...data.pdf } : p));
+      }
+      
+      // Refresh to get latest status
+      await fetchPDFs();
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : 'Processing failed';
+      setError(errorMsg);
+      // Revert status on error
+      await refreshPdfStatus(pdfId);
+    }
+  };
   
 
   // Removed synchronous extraction path in favor of async queue + background worker
@@ -304,11 +449,10 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
     setError(null);
 
     try {
-      const response = await fetch('/api/pdf/summarize', {
+      const response = await fetch(`/api/pdf/summarize?id=${pdf.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          pdf_id: pdf.id,
           workspace_id: selectedWorkspaceId,
           folder_id: selectedFolderId,
         }),
@@ -320,12 +464,35 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
       }
 
       const data = await response.json();
+      
+      // Store the complete summary data
+      const summaryData: PDFSummary = {
+        summary: data.summary || data.note?.summary || '',
+        takeaways: data.takeaways || data.note?.takeaways || [],
+        actions: data.actions || data.note?.actions || [],
+        sentiment: data.sentiment || data.note?.sentiment || 'neutral',
+        tags: data.tags || data.note?.tags || [],
+        page_references: data.page_references || 0,
+        note_id: data.note?.id,
+      };
+      
       setSuccess('PDF summarized successfully!');
       
-      // Update the PDF in the list
-      setPdfs(prev => prev.map(p => p.id === pdf.id ? { ...p, summary: data.summary } : p));
-  setPdfs(prev => prev.map(p => p.id === pdf.id ? { ...p, summary: data.summary, summary_text: data.summary } : p));
-      setSelectedPdf({ ...pdf, summary: data.summary });
+      // Update the PDF in the list with full summary data
+      setPdfs(prev => prev.map(p => p.id === pdf.id ? { 
+        ...p, 
+        summary_text: summaryData.summary,
+        summary: summaryData.summary,
+        summaryData: summaryData // Store complete data
+      } : p));
+      
+      // Set selected PDF with full summary data
+      setSelectedPdf({ 
+        ...pdf, 
+        summary_text: summaryData.summary,
+        summary: summaryData.summary,
+        summaryData: summaryData 
+      });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Summarization failed');
     } finally {
@@ -374,6 +541,8 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
     switch (status) {
       case 'completed':
         return <CheckCircle2 className="h-4 w-4 text-green-500" />;
+      case 'pending':
+        return <Clock className="h-4 w-4 text-amber-500" />;
       case 'processing':
         return <Loader2 className="h-4 w-4 text-blue-500 animate-spin" />;
       case 'failed':
@@ -409,7 +578,7 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
 
       {/* Upload Section */}
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="flex items-center gap-2">
             <Upload className="h-5 w-5" />
             Upload PDF
@@ -417,6 +586,11 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
           <CardDescription>
             Upload a PDF file to extract text and generate AI summaries
           </CardDescription>
+          <div className="ml-auto">
+            <Button size="sm" variant="outline" onClick={fetchPDFs}>
+              Refresh list
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
@@ -493,11 +667,16 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
 
       {/* PDF List */}
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="flex items-center gap-2">
             <FileText className="h-5 w-5" />
             Your PDFs ({pdfs.length})
           </CardTitle>
+          <div className="ml-auto">
+            <Button size="sm" variant="outline" onClick={fetchPDFs}>
+              Refresh all
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -518,37 +697,72 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
                       <div className="flex-1 space-y-2">
                         <div className="flex items-center gap-2">
                           {getStatusIcon(pdf.status)}
-                          <h3 className="font-semibold">{pdf.filename}</h3>
+                          <h3 className="font-semibold">{pdf.original_filename || pdf.filename || 'Untitled'}</h3>
                           <Badge variant={pdf.status === 'completed' ? 'default' : 'secondary'}>
                             {pdf.status}
                           </Badge>
+                          {(pdf.status === 'pending' || pdf.status === 'processing') && (
+                            <span className="text-xs text-muted-foreground">
+                              {formatElapsed(pdf.created_at)} elapsed
+                            </span>
+                          )}
                         </div>
                         <div className="flex gap-4 text-sm text-muted-foreground">
-                          <span>{formatFileSize(pdf.file_size)}</span>
                           <span>{formatFileSize(pdf.file_size_bytes || pdf.file_size || 0)}</span>
                           {pdf.page_count && <span>{pdf.page_count} pages</span>}
                           <span>{new Date(pdf.created_at).toLocaleDateString()}</span>
                         </div>
-                        {pdf.error_message && (
-                          <p className="text-sm text-destructive">{pdf.error_message}</p>
+                        {(pdf.error_message || pdf.processing_error) && (
+                          <p className="text-sm text-destructive">{pdf.error_message || pdf.processing_error}</p>
+                        )}
+                        {(pdf.status === 'pending' || pdf.status === 'processing') && (
+                          <p className="text-xs text-muted-foreground">
+                            We’re processing this PDF in the background. This can take up to a few minutes for large files.
+                            {(() => { const since = new Date(pdf.created_at).getTime(); return (nowTs - since) / 1000 > 30 ? ' Still working—hang tight.' : '' })()}
+                          </p>
                         )}
                       </div>
                       <div className="flex gap-2">
-                        {pdf.status === 'completed' && !pdf.summary && (
+                        {(pdf.status === 'uploading' || pdf.status === 'pending' || pdf.status === 'processing') && (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => refreshPdfStatus(pdf.id)}
+                              title="Check current processing status"
+                            >
+                              <Clock className="h-4 w-4 mr-1" />
+                              Refresh
+                            </Button>
+                            {pdf.status === 'pending' && (
+                              <Button
+                                size="sm"
+                                variant="default"
+                                onClick={() => handleProcessNow(pdf.id)}
+                                title="Process PDF immediately (doesn't require background worker)"
+                              >
+                                <Zap className="h-4 w-4 mr-1" />
+                                Process Now
+                              </Button>
+                            )}
+                          </>
+                        )}
+                        {pdf.status === 'completed' && pdf.full_text && (
                           <Button
                             size="sm"
                             variant="outline"
                             onClick={() => handleSummarize(pdf)}
                             disabled={summarizing === pdf.id}
+                            title={pdf.summary_text || pdf.summary ? 'Re-summarize PDF' : 'Summarize PDF'}
                           >
                             {summarizing === pdf.id ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
                             ) : (
-                              'Summarize'
+                              <>{(pdf.summary_text || pdf.summary) ? 'Re-' : ''}Summarize</>
                             )}
                           </Button>
                         )}
-                        {pdf.summary && (
+                        {(pdf.summary_text || pdf.summary) && (
                           <Button
                             size="sm"
                             variant="outline"
@@ -575,23 +789,128 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
       </Card>
 
       {/* Summary View */}
-      {selectedPdf?.summary && (
+      {selectedPdf && (selectedPdf.summary_text || selectedPdf.summary) && (
         <Card>
-          <CardHeader>
-            <CardTitle>Summary: {selectedPdf.filename}</CardTitle>
+          <CardHeader className="relative">
+            <CardTitle className="pr-24">Summary: {selectedPdf.original_filename || selectedPdf.filename || 'PDF'}</CardTitle>
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
               onClick={() => setSelectedPdf(null)}
               className="absolute top-4 right-4"
             >
-              Close
+              <X className="h-4 w-4" />
             </Button>
           </CardHeader>
-          <CardContent>
-            <div className="prose dark:prose-invert max-w-none">
-              <div className="whitespace-pre-wrap">{selectedPdf.summary}</div>
+          <CardContent className="space-y-6">
+            {/* Main Summary */}
+            <div>
+              <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                <FileText className="h-5 w-5 text-primary" />
+                Summary
+              </h3>
+              <div className="prose dark:prose-invert max-w-none">
+                <p className="text-muted-foreground leading-relaxed whitespace-pre-wrap">
+                  {selectedPdf.summaryData?.summary || selectedPdf.summary_text || selectedPdf.summary}
+                </p>
+              </div>
             </div>
+
+            {/* Sentiment Badge */}
+            {selectedPdf.summaryData?.sentiment && (
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">Sentiment:</span>
+                <Badge 
+                  variant={
+                    selectedPdf.summaryData.sentiment === 'positive' ? 'default' :
+                    selectedPdf.summaryData.sentiment === 'negative' ? 'destructive' :
+                    'secondary'
+                  }
+                  className="flex items-center gap-1"
+                >
+                  {selectedPdf.summaryData.sentiment === 'positive' && <Smile className="h-3 w-3" />}
+                  {selectedPdf.summaryData.sentiment === 'negative' && <Frown className="h-3 w-3" />}
+                  {selectedPdf.summaryData.sentiment === 'neutral' && <Meh className="h-3 w-3" />}
+                  {selectedPdf.summaryData.sentiment.charAt(0).toUpperCase() + selectedPdf.summaryData.sentiment.slice(1)}
+                </Badge>
+              </div>
+            )}
+
+            {/* Key Takeaways */}
+            {selectedPdf.summaryData?.takeaways && selectedPdf.summaryData.takeaways.length > 0 && (
+              <div>
+                <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                  <Target className="h-5 w-5 text-primary" />
+                  Key Takeaways
+                </h3>
+                <ul className="space-y-2">
+                  {selectedPdf.summaryData.takeaways.map((takeaway, idx) => (
+                    <li key={idx} className="flex items-start gap-3">
+                      <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400 mt-0.5 flex-shrink-0" />
+                      <span className="text-muted-foreground">{takeaway}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Action Items */}
+            {selectedPdf.summaryData?.actions && selectedPdf.summaryData.actions.length > 0 && (
+              <div>
+                <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                  <ListChecks className="h-5 w-5 text-primary" />
+                  Action Items
+                </h3>
+                <ul className="space-y-3">
+                  {selectedPdf.summaryData.actions.map((action, idx) => (
+                    <li key={idx} className="flex items-start gap-3 p-3 rounded-lg bg-accent/50 hover:bg-accent transition-colors">
+                      <div className="flex-1">
+                        <p className="font-medium">{action.task}</p>
+                        {action.datetime && (
+                          <p className="text-sm text-muted-foreground flex items-center gap-1 mt-1">
+                            <Calendar className="h-3 w-3" />
+                            {action.datetime}
+                          </p>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Tags */}
+            {selectedPdf.summaryData?.tags && selectedPdf.summaryData.tags.length > 0 && (
+              <div>
+                <h3 className="text-sm font-medium mb-2 flex items-center gap-2">
+                  <Hash className="h-4 w-4 text-muted-foreground" />
+                  Tags
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {selectedPdf.summaryData.tags.map((tag, idx) => (
+                    <Badge key={idx} variant="outline" className="text-xs">
+                      {tag}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Page References */}
+            {selectedPdf.summaryData?.page_references && selectedPdf.summaryData.page_references > 0 && (
+              <div className="text-sm text-muted-foreground">
+                Referenced {selectedPdf.summaryData.page_references} page{selectedPdf.summaryData.page_references !== 1 ? 's' : ''} from the document
+              </div>
+            )}
+
+            {/* Note ID Link */}
+            {selectedPdf.summaryData?.note_id && (
+              <div className="pt-4 border-t">
+                <p className="text-sm text-muted-foreground">
+                  This summary has been saved to your notes (ID: {selectedPdf.summaryData.note_id})
+                </p>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

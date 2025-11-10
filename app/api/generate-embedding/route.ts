@@ -33,8 +33,8 @@ export async function POST(req: Request) {
         .from('notes')
         .select('original_notes, summary, takeaways')
         .eq('id', noteId)
-        .single();
-      if (fetchErr) {
+        .maybeSingle();
+      if (fetchErr || !note) {
         logger.error('Failed to load note for embedding', fetchErr as Error, { noteId });
         return NextResponse.json({ error: 'Note not found' }, { status: 404 });
       }
@@ -61,15 +61,35 @@ export async function POST(req: Request) {
       logger.warn('Embedding length differs from configured dimension', undefined, { got: embedding.length, expected: EMBEDDING_DIMENSION });
     }
 
-    const { error } = await supabase
-      .from('notes')
-      .update({ embedding })
-      .eq('id', noteId);
+    // Try write and attempt automatic padding on dimension mismatch
+    const tryUpsert = async (vec: number[]) => {
+      const { error: upsertErr } = await supabase
+        .from('notes')
+        .update({ embedding: vec })
+        .eq('id', noteId);
+      return upsertErr;
+    };
+
+    let error = await tryUpsert(embedding);
+    if (error) {
+  const errObj = error as unknown as { message?: unknown };
+  const msg = errObj && errObj.message ? String(errObj.message) : String(error);
+      // If DB expects larger vector, pad and retry
+      const m = msg.match(/expected\s*(\d+)/i);
+      if (m && m[1]) {
+        const expected = Number(m[1]);
+        if (expected > embedding.length) {
+          logger.warn('Padding embedding to match DB dimension', undefined, { noteId, got: embedding.length, expected });
+          const padded = embedding.concat(new Array(expected - embedding.length).fill(0));
+          error = await tryUpsert(padded);
+        }
+      }
+    }
 
     if (error) {
       logger.error('Error updating embedding', error as Error, { noteId });
-  const msg = error instanceof Error ? error.message : String(error);
-  await supabase.from('embedding_jobs').update({ status: 'failed', finished_at: new Date().toISOString(), error_message: msg }).eq('note_id', noteId);
+      const msg = error instanceof Error ? error.message : String(error);
+      await supabase.from('embedding_jobs').update({ status: 'failed', finished_at: new Date().toISOString(), error_message: msg }).eq('note_id', noteId);
       return NextResponse.json({ success: false, error: 'Failed to save embedding to database.' }, { status: 500 });
     }
 

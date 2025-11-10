@@ -474,4 +474,221 @@ describe('SearchBar', () => {
       expect(screen.queryByText('Test result')).not.toBeInTheDocument();
     });
   });
+
+  describe('Retry Logic with Lexical Fallback', () => {
+    test('should automatically retry with lexical-only when SEMANTIC_RPC_FAILED is returned', async () => {
+      // First call fails with SEMANTIC_RPC_FAILED
+      // Second call (lexical-only retry) succeeds
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          json: async () => ({
+            error: 'Failed to search notes. Ensure semantic-search migration SQL ran.',
+            code: 'SEMANTIC_RPC_FAILED',
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            results: [
+              {
+                id: 1,
+                summary: 'Test note from lexical',
+                original_notes: 'This is a test',
+                persona: 'default',
+                created_at: '2025-01-01T00:00:00Z',
+                similarity: 0,
+              },
+            ],
+            query: 'test',
+            count: 1,
+            mode: 'lexical',
+          }),
+        });
+
+      render(<SearchBar userId={mockUserId} />);
+
+      const input = screen.getByPlaceholderText('searchPlaceholder');
+      fireEvent.change(input, { target: { value: 'test query' } });
+      fireEvent.submit(input.closest('form')!);
+
+      // Wait for both fetch calls
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+      }, { timeout: 3000 });
+
+      // Verify first call was semantic (no lexicalOnly flag)
+      const firstCallBody = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+      expect(firstCallBody.query).toBe('test query');
+      expect(firstCallBody.lexicalOnly).toBeUndefined();
+
+      // Verify second call was lexical-only retry
+      const secondCallBody = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
+      expect(secondCallBody.lexicalOnly).toBe(true);
+
+      // Verify results are displayed
+      await waitFor(() => {
+        expect(screen.getByText('Test note from lexical')).toBeInTheDocument();
+      });
+    });
+
+    test('should retry with lexical-only on SEMANTIC_DIMENSION_MISMATCH', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          json: async () => ({
+            error: 'Semantic search failed due to dimension mismatch. Expected 384.',
+            code: 'SEMANTIC_DIMENSION_MISMATCH',
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            results: [],
+            query: 'dimension test',
+            count: 0,
+            mode: 'lexical',
+          }),
+        });
+
+      render(<SearchBar userId={mockUserId} />);
+
+      const input = screen.getByPlaceholderText('searchPlaceholder');
+      fireEvent.change(input, { target: { value: 'dimension test' } });
+      fireEvent.submit(input.closest('form')!);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+      }, { timeout: 3000 });
+
+      // Verify retry occurred with lexicalOnly flag
+      const retryCallBody = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
+      expect(retryCallBody.lexicalOnly).toBe(true);
+    });
+
+    test('should not filter lexical results by similarity threshold', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          results: [
+            {
+              id: 1,
+              summary: 'Lexical match 1',
+              original_notes: 'Content 1',
+              persona: 'default',
+              created_at: '2025-01-01T00:00:00Z',
+              similarity: 0, // Lexical results have 0 similarity
+            },
+            {
+              id: 2,
+              summary: 'Lexical match 2',
+              original_notes: 'Content 2',
+              persona: 'default',
+              created_at: '2025-01-02T00:00:00Z',
+              similarity: 0,
+            },
+          ],
+          query: 'keyword',
+          count: 2,
+          mode: 'lexical',
+        }),
+      });
+
+      render(<SearchBar userId={mockUserId} />);
+
+      const input = screen.getByPlaceholderText('searchPlaceholder');
+      fireEvent.change(input, { target: { value: 'keyword' } });
+      fireEvent.submit(input.closest('form')!);
+
+      // Both results should be displayed even though similarity is 0
+      await waitFor(() => {
+        expect(screen.getByText('Lexical match 1')).toBeInTheDocument();
+        expect(screen.getByText('Lexical match 2')).toBeInTheDocument();
+      });
+    });
+
+    test('should show error if both semantic and lexical-only retry fail', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          json: async () => ({
+            error: 'RPC failed',
+            code: 'SEMANTIC_RPC_FAILED',
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          json: async () => ({
+            error: 'Lexical search also failed',
+            code: 'LEXICAL_FAILED',
+          }),
+        });
+
+      render(<SearchBar userId={mockUserId} />);
+
+      const input = screen.getByPlaceholderText('searchPlaceholder');
+      fireEvent.change(input, { target: { value: 'fail test' } });
+      fireEvent.submit(input.closest('form')!);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+      }, { timeout: 3000 });
+
+      // Error should be displayed (original semantic error message)
+      await waitFor(() => {
+        expect(screen.getByText(/RPC failed/i)).toBeInTheDocument();
+      });
+    });
+
+    test('should apply similarity filter for semantic results only', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          results: [
+            {
+              id: 1,
+              summary: 'High similarity',
+              original_notes: 'Very relevant',
+              persona: 'default',
+              created_at: '2025-01-01T00:00:00Z',
+              similarity: 0.85,
+            },
+            {
+              id: 2,
+              summary: 'Low similarity',
+              original_notes: 'Less relevant',
+              persona: 'default',
+              created_at: '2025-01-02T00:00:00Z',
+              similarity: 0.60,
+            },
+          ],
+          query: 'semantic',
+          count: 2,
+          mode: 'semantic',
+        }),
+      });
+
+      render(<SearchBar userId={mockUserId} />);
+
+      // Default threshold is 0.75 (75%)
+      const input = screen.getByPlaceholderText('searchPlaceholder');
+      fireEvent.change(input, { target: { value: 'semantic' } });
+      fireEvent.submit(input.closest('form')!);
+
+      await waitFor(() => {
+        expect(screen.getByText('High similarity')).toBeInTheDocument();
+      });
+
+      // Low similarity result should be filtered out on client side
+      expect(screen.queryByText('Low similarity')).not.toBeInTheDocument();
+    });
+  });
 });

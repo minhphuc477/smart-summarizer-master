@@ -103,7 +103,22 @@ export async function DELETE(request: NextRequest, props: Params) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Delete workspace (RLS sẽ check permission)
+    // Check if user is the owner
+    const { data: membership } = await supabase
+      .from('workspace_members')
+      .select('role')
+      .eq('workspace_id', id)
+      .eq('user_id', user.id)
+      .single();
+
+    if (!membership || membership.role !== 'owner') {
+      return NextResponse.json(
+        { error: 'Only workspace owners can delete workspaces' },
+        { status: 403 }
+      );
+    }
+
+    // Delete workspace (cascade will handle members, notes, folders, etc.)
     const { error } = await supabase
       .from('workspaces')
       .delete()
@@ -114,7 +129,7 @@ export async function DELETE(request: NextRequest, props: Params) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, message: 'Workspace deleted successfully' });
   } catch (error) {
     console.error('Unexpected error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

@@ -35,9 +35,14 @@ export async function PATCH(request: NextRequest, props: Params) {
     if (authError || !user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await request.json();
+    console.log('[PATCH /api/notes/[id]] Request body:', JSON.stringify(body, null, 2));
+    
   const allowed = ['summary', 'original_notes', 'persona', 'folder_id', 'tags', 'sentiment', 'takeaways', 'actions', 'is_public', 'is_pinned'] as const;
     const updates: Record<string, unknown> = {};
     for (const key of allowed) if (key in body) updates[key] = body[key];
+    
+    console.log('[PATCH /api/notes/[id]] Updates to apply:', JSON.stringify(updates, null, 2));
+    
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 });
     }
@@ -50,11 +55,21 @@ export async function PATCH(request: NextRequest, props: Params) {
       .select()
       .single();
 
-    if (error || !note) return NextResponse.json({ error: 'Failed to update note' }, { status: 500 });
+    if (error) {
+      console.error('[PATCH /api/notes/[id]] Database error:', error);
+      return NextResponse.json({ error: 'Failed to update note', details: error.message }, { status: 500 });
+    }
+    
+    if (!note) {
+      console.error('[PATCH /api/notes/[id]] No note returned after update');
+      return NextResponse.json({ error: 'Note not found or unauthorized' }, { status: 404 });
+    }
+    
+    console.log('[PATCH /api/notes/[id]] Success');
     return NextResponse.json({ note });
   } catch (e) {
-    console.error('Unexpected error:', e);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    console.error('[PATCH /api/notes/[id]] Unexpected error:', e);
+    return NextResponse.json({ error: 'Internal server error', details: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }
 }
 

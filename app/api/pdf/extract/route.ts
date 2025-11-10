@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createRequestLogger } from '@/lib/logger';
 import { getServerSupabase } from '@/lib/supabaseServer';
-import { PDFParse } from 'pdf-parse';
 
 export async function POST(req: NextRequest) {
   const logger = createRequestLogger(req);
@@ -66,18 +65,23 @@ export async function POST(req: NextRequest) {
       const arrayBuffer = await fileData.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
 
-      // Extract text from PDF
-        // Extract text from PDF using PDFParse
+      // Extract text from PDF using PDFParse class
+      let pdfData: { text: string; numpages: number; info: unknown } | null = null;
+      try {
+        // Dynamically import pdf-parse only when needed (server-side only)
+        const { PDFParse } = await import('pdf-parse');
         const parser = new PDFParse({ data: buffer });
         const textResult = await parser.getText();
-      
-        // Get page count (need to parse again for metadata)
         const infoResult = await parser.getInfo();
-        const pdfData = {
+        pdfData = {
           text: textResult.text,
           numpages: textResult.pages.length,
           info: infoResult.metadata,
         };
+      } catch (impErr) {
+        console.error('[PDF Extract] pdf-parse extract error:', impErr);
+        throw new Error('PDF extraction failed');
+      }
 
       // Extract text by page
       const pages: Array<{ page: number; text: string; wordCount: number }> = [];
@@ -85,6 +89,10 @@ export async function POST(req: NextRequest) {
 
       // Split by page breaks (this is approximate as pdf-parse doesn't give precise page breaks)
       // For better page-by-page extraction, consider using pdf.js or pdfjs-dist
+      if (!pdfData) {
+        throw new Error('PDF extraction returned no data');
+      }
+
       const textLines = pdfData.text.split('\n');
       const estimatedLinesPerPage = Math.ceil(textLines.length / pdfData.numpages);
 
@@ -116,14 +124,15 @@ export async function POST(req: NextRequest) {
       };
 
       // Try to extract metadata if available
-      if (pdfData.info && typeof pdfData.info.get === 'function') {
+      if (pdfData.info && typeof (pdfData.info as Record<string, unknown>).get === 'function') {
         try {
-          metadata.title = pdfData.info.get('dc:title') || pdfData.info.get('Title') || metadata.title;
-          metadata.author = pdfData.info.get('dc:creator') || pdfData.info.get('Author') || null;
-          metadata.subject = pdfData.info.get('dc:subject') || pdfData.info.get('Subject') || null;
-          metadata.keywords = pdfData.info.get('pdf:Keywords') || pdfData.info.get('Keywords') || null;
-          metadata.creator = pdfData.info.get('xmp:CreatorTool') || pdfData.info.get('Creator') || null;
-          metadata.producer = pdfData.info.get('pdf:Producer') || pdfData.info.get('Producer') || null;
+          const infoGetter = pdfData.info as { get: (key: string) => string | null };
+          metadata.title = infoGetter.get('dc:title') || infoGetter.get('Title') || metadata.title;
+          metadata.author = infoGetter.get('dc:creator') || infoGetter.get('Author') || null;
+          metadata.subject = infoGetter.get('dc:subject') || infoGetter.get('Subject') || null;
+          metadata.keywords = infoGetter.get('pdf:Keywords') || infoGetter.get('Keywords') || null;
+          metadata.creator = infoGetter.get('xmp:CreatorTool') || infoGetter.get('Creator') || null;
+          metadata.producer = infoGetter.get('pdf:Producer') || infoGetter.get('Producer') || null;
         } catch (e) {
           console.warn('Failed to extract PDF metadata:', e);
         }

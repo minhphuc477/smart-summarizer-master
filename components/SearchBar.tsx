@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useMemo, useEffect } from 'react';
+import { useRef, useState, useMemo, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { Button } from "@/components/ui/button";
@@ -40,7 +40,7 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
   const [hasSearched, setHasSearched] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
   // Min similarity threshold (0.50 - 1.00). Stored as 0-1 float, UI shows %
-  const [minSimilarity, setMinSimilarity] = useState(0.75);
+  const [minSimilarity, setMinSimilarity] = useState(0.5);
   const [recentSearches, setRecentSearches] = useState<string[]>(() => {
     try {
       const raw = localStorage.getItem('recent_searches');
@@ -55,7 +55,7 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
   const debounceTimer = useRef<NodeJS.Timeout | null>(null);
 
   // Advanced filters & dialog state
-  const [filters, setFilters] = useState<SearchFilters>({ restrictToFolder: true });
+  const [filters, setFilters] = useState<SearchFilters>({ restrictToFolder: false });
   const [showFilters, setShowFilters] = useState(false);
   // Keep a ref of the most-recently applied filters so rapid Apply->Search (in tests/UI)
   // uses the intended values even if React state update hasn't flushed yet.
@@ -72,8 +72,13 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
   const [copiedShareId, setCopiedShareId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
-  const handleSearch = async (query: string) => {
-    if (!query.trim()) return;
+  const handleSearch = useCallback(async (query: string) => {
+    console.log('[SearchBar] handleSearch called with query:', query);
+    if (!query.trim()) {
+      console.log('[SearchBar] Query is empty, skipping search');
+      return;
+    }
+    console.log('[SearchBar] Starting search...');
     setIsSearching(true);
     setError(null);
     setHasSearched(true);
@@ -101,13 +106,53 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
           }
         })
       });
-      const data = await response.json();
+      let data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || 'Search failed');
+        // If semantic search RPC failed or dimension mismatch, retry with lexical-only fallback
+        const code = (data && typeof data.code === 'string') ? data.code : '';
+        if (code === 'SEMANTIC_RPC_FAILED' || code === 'SEMANTIC_DIMENSION_MISMATCH') {
+          try {
+            const retryRes = await fetch('/api/search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                query,
+                userId: userId,
+                folderId: effectiveFolderId,
+                matchCount: 5,
+                lexicalOnly: true,
+                filters: {
+                  dateFrom: usedFilters.dateFrom || undefined,
+                  dateTo: usedFilters.dateTo || undefined,
+                  sentiment: usedFilters.sentiment && usedFilters.sentiment !== 'any' ? usedFilters.sentiment : undefined,
+                  tags: (usedFilters.tags || []).length ? usedFilters.tags : undefined,
+                }
+              })
+            });
+            const retryData = await retryRes.json();
+            if (retryRes.ok) {
+              data = retryData;
+              toast.info('Semantic search is unavailable; showing keyword matches instead.');
+            } else {
+              throw new Error(retryData?.error || 'Search failed');
+            }
+          } catch (_retryErr) {
+            throw new Error(data.error || 'Search failed');
+          }
+        } else {
+          throw new Error(data.error || 'Search failed');
+        }
       }
-      // Also filter client-side defensively in case backend returns wider set
-      const results = (data.results || []).filter((r: SearchResult) => (r.similarity ?? 0) >= minSimilarity);
-      setSearchResults(results);
+      // Server already filtered by threshold, so use results directly
+      // Only apply client threshold if user manually adjusted slider AFTER search completed
+      const rawResults: SearchResult[] = Array.isArray(data.results) ? data.results : [];
+      console.log('[SearchBar] Server returned results:', rawResults.length);
+      console.log('[SearchBar] Results:', rawResults);
+      console.log('[SearchBar] Setting search results...');
+      // Don't double-filter - server already applied threshold
+      setSearchResults(rawResults);
+      setHasSearched(true);
+      console.log('[SearchBar] State updated - hasSearched:', true, 'resultsCount:', rawResults.length);
       // Save recent search
       try {
         const next = [query, ...recentSearches.filter(q => q !== query)].slice(0, 5);
@@ -125,7 +170,7 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
     } finally {
       setIsSearching(false);
     }
-  };
+  }, [userId, folderId, minSimilarity, filters, recentSearches]);
 
   // Debounced search-as-you-type
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -148,9 +193,11 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
     const clamped = Math.max(0.5, Math.min(1, value));
     setMinSimilarity(clamped);
     // If user has already searched and query present, refresh results immediately
-    if (searchQuery.trim()) {
+    // Force re-search by calling handleSearch after state update completes
+    if (searchQuery.trim() && hasSearched) {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
-      handleSearch(searchQuery);
+      // Use setTimeout to ensure state update completes before search
+      setTimeout(() => handleSearch(searchQuery), 0);
     }
   };
 
@@ -194,6 +241,17 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
   useEffect(() => {
     lastAppliedFiltersRef.current = filters;
   }, [filters]);
+
+  // Trigger search when minSimilarity changes (if we have an active search query)
+  useEffect(() => {
+    if (searchQuery.trim()) {
+      // Re-search whenever minSimilarity changes and we have a query
+      const timer = setTimeout(() => {
+        handleSearch(searchQuery);
+      }, 300); // Small delay to avoid too many rapid searches
+      return () => clearTimeout(timer);
+    }
+  }, [minSimilarity]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const saveCurrentSearch = async () => {
     if (!searchQuery.trim()) {

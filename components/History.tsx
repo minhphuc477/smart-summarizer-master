@@ -91,6 +91,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 type HistoryProps = {
   isGuest?: boolean;
   selectedFolderId?: number | null;
+  selectedWorkspaceId?: string | null;
   userId?: string;
   supabaseClient?: SupabaseClient;
 };
@@ -102,7 +103,7 @@ function RelatedNotesWidgetWrapper({ noteId }: { noteId: number }) {
   return <RelatedNotesWidget noteId={noteId} />;
 }
 
-function History({ isGuest = false, selectedFolderId = null, userId, supabaseClient }: HistoryProps) {
+function History({ isGuest = false, selectedFolderId = null, selectedWorkspaceId = null, userId, supabaseClient }: HistoryProps) {
   const supabase = supabaseClient ?? defaultSupabase;
   const [notes, setNotes] = useState<Note[]>([]);
   const [guestNotes, setGuestNotes] = useState<GuestNote[]>([]);
@@ -190,13 +191,14 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
   const { speak, stop, isSpeaking, isSupported } = useSpeech();
   const [speakingNoteId, setSpeakingNoteId] = useState<number | string | null>(null);
   
-    // Note details dialog state (for collaboration features)
-    const [detailsNoteId, setDetailsNoteId] = useState<number | null>(null);
-    const [collaboration, setCollaboration] = useState<RealtimeCollaboration | null>(null);
-    const [comments, setComments] = useState<Comment[]>([]);
-    const [presence, setPresence] = useState<PresenceState[]>([]);
-    const [versions, setVersions] = useState<NoteVersion[]>([]);
-    const [loadingVersions, setLoadingVersions] = useState(false);
+  // Note details dialog state (for collaboration features)
+  const [detailsNoteId, setDetailsNoteId] = useState<number | null>(null);
+  const [collaboration, setCollaboration] = useState<RealtimeCollaboration | null>(null);
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [presence, setPresence] = useState<PresenceState[]>([]);
+  const [versions, setVersions] = useState<NoteVersion[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(false);
+  const [detailsLoading, setDetailsLoading] = useState(false);
 
   const getSentimentEmoji = (sentiment?: string) => {
     switch (sentiment) {
@@ -272,6 +274,7 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
             persona, 
             sentiment,
             folder_id,
+            workspace_id,
             is_public,
             is_pinned,
             share_id,
@@ -291,10 +294,15 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
             )
             `, { count: 'exact' });
 
-          // Apply optional folder filter, pagination, and then order
-          const query = selectedFolderId !== null
-            ? base.eq('folder_id', selectedFolderId)
-            : base;
+          // Apply workspace filter first (if set), then optional folder filter
+          let query = selectedWorkspaceId !== null
+            ? base.eq('workspace_id', selectedWorkspaceId)
+            : base.is('workspace_id', null);
+          
+          // Then apply folder filter if selectedFolderId is set
+          if (selectedFolderId !== null) {
+            query = query.eq('folder_id', selectedFolderId);
+          }
           
           // Apply ordering; use range when available (tests may mock without it)
           const ordered1 = query.order('is_pinned', { ascending: false });
@@ -345,7 +353,7 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
     fetchNotes();
     // supabase is a stable dependency from the prop default and does not change
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isGuest, selectedFolderId]);
+  }, [isGuest, selectedFolderId, selectedWorkspaceId]);
 
   // Recompute focus when filters change or notes update
   useEffect(() => {
@@ -369,6 +377,7 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
           persona,
           sentiment,
           folder_id,
+          workspace_id,
           is_public,
           is_pinned,
           share_id,
@@ -388,7 +397,15 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
           )
         `, { count: 'exact' });
 
-      const query = selectedFolderId !== null ? base.eq('folder_id', selectedFolderId) : base;
+      // Apply workspace filter first (if set), then optional folder filter
+      let query = selectedWorkspaceId !== null
+        ? base.eq('workspace_id', selectedWorkspaceId)
+        : base.is('workspace_id', null);
+      
+      // Then apply folder filter if selectedFolderId is set
+      if (selectedFolderId !== null) {
+        query = query.eq('folder_id', selectedFolderId);
+      }
       const ordered1 = query.order('is_pinned', { ascending: false });
       const canChainOrder = typeof (ordered1 as unknown as { order?: unknown }).order === 'function';
       const ordered = canChainOrder
@@ -432,7 +449,7 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
     } finally {
       setIsLoadingMore(false);
     }
-  }, [PAGE_SIZE, isGuest, isLoadingMore, selectedFolderId, supabase]);
+  }, [PAGE_SIZE, isGuest, isLoadingMore, selectedFolderId, selectedWorkspaceId, supabase]);
 
   // Load more notes (next page)
   const loadMore = async () => {
@@ -1106,17 +1123,21 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
     
       setDetailsNoteId(noteId);
     
-      // Initialize real-time collaboration
-      const collab = new RealtimeCollaboration(supabase, String(noteId));
-      setCollaboration(collab);
-    
-      // Fetch existing comments first
-      const { data: existingComments } = await collab.getComments();
-      if (existingComments) {
-        setComments(existingComments as Comment[]);
-      }
-    
-      // Subscribe to comments
+    // Initialize real-time collaboration
+    const collab = new RealtimeCollaboration(supabase, String(noteId));
+    setCollaboration(collab);
+  
+    // Fetch existing comments first
+    const { data: existingComments, error: commentsError } = await collab.getComments();
+    if (commentsError) {
+      // Silently fail if comments table doesn't exist or has issues
+      console.warn('Comments not available:', commentsError.message || 'Unknown error');
+      // Don't clear existing comments - they may still be valid from previous load
+      // Don't show error toast for optional feature
+    } else {
+      // Only update comments if we successfully fetched them (even if empty array)
+      setComments(existingComments as Comment[] || []);
+    }      // Subscribe to comments
       await collab.subscribeToComments((comment) => {
         setComments(prev => {
           const exists = prev.find(c => c.id === comment.id);
@@ -1150,86 +1171,122 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
       setLoadingVersions(false);
     };
   
-    const handleCloseDetails = async () => {
-      try {
-        if (collaboration) {
-          // Best-effort leave presence and cleanup; don't block UI if these fail
-          try {
-            await collaboration.leavePresence();
-          } catch (e) {
-            console.warn('leavePresence failed', e);
-          }
-          try {
-            await collaboration.cleanup();
-          } catch (e) {
-            console.warn('cleanup failed', e);
-          }
+  const handleCloseDetails = async () => {
+    setDetailsLoading(true);
+    try {
+      if (collaboration) {
+        // Best-effort leave presence and cleanup; don't block UI if these fail
+        try {
+          await collaboration.leavePresence();
+        } catch (e) {
+          console.warn('leavePresence failed', e);
         }
-      } finally {
-        // Always reset local UI state so the dialog can close promptly
-        setDetailsNoteId(null);
-        setCollaboration(null);
-        // Preserve comments so they remain visible immediately on reopen; they'll be refreshed on mount
-        setPresence([]);
-        setVersions([]);
+        try {
+          await collaboration.cleanup();
+        } catch (e) {
+          console.warn('cleanup failed', e);
+        }
       }
-    };
-  
-    const handleAddComment = async (data: { content: string; parent_id?: number; mentions: string[] }) => {
-        if (!collaboration) return { data: null, error: { message: 'Not connected' } };
-
-        const result = await collaboration.addComment(data);
-        if (result.error) {
-          toast.error('Failed to add comment');
-          return result;
-        }
-
-        // Optimistically append the newly created comment so UI updates immediately
-        if (result.data) {
-          const newComment = result.data as Comment;
-          setComments(prev => {
-            // Avoid duplicate if subscription already provided it
-            const exists = prev.find(c => c.id === newComment.id);
-            if (exists) return prev;
-            return [...prev, newComment];
-          });
-        }
-
-        toast.success('Comment added');
-        return result;
+    } finally {
+      // Always reset local UI state so the dialog can close promptly
+      setDetailsNoteId(null);
+      setCollaboration(null);
+      // DON'T clear comments - preserve them for quick reopen
+      // Only clear presence and versions
+      setPresence([]);
+      setVersions([]);
+      setDetailsLoading(false);
+    }
   };
+  
+  const handleAddComment = async (data: { content: string; parent_id?: number; mentions: string[] }) => {
+      if (!collaboration) return { data: null, error: { message: 'Not connected' } };
+      
+      setDetailsLoading(true);
+      const result = await collaboration.addComment(data);
+      setDetailsLoading(false);
+      
+      if (result.error) {
+        console.error('Failed to add comment:', result.error);
+        toast.error(`Failed to add comment: ${result.error.message || 'Unknown error'}`);
+        return result;
+      }
 
-  const handleResolve = async (commentId: number) => {
+      // Optimistically append the newly created comment so UI updates immediately
+      if (result.data) {
+        const newComment = result.data as Comment;
+        setComments(prev => {
+          // Avoid duplicate if subscription already provided it
+          const exists = prev.find(c => c.id === newComment.id);
+          if (exists) return prev;
+          return [...prev, newComment];
+        });
+      }
+
+      toast.success('Comment added');
+      return result;
+};
+
+const handleResolve = async (commentId: number) => {
+  if (!collaboration) return;
+  
+  setDetailsLoading(true);
+  const result = await collaboration.resolveComment(commentId);
+  setDetailsLoading(false);
+  
+  if (result.error) {
+    toast.error('Failed to resolve comment');
+  } else {
+    toast.success('Comment resolved');
+    setComments(prev => prev.map(c => 
+      c.id === commentId ? { ...c, resolved: true } : c
+    ));
+  }
+};
+
+const handleDeleteComment = async (commentId: number) => {
+  if (!collaboration) return;
+  
+  if (!confirm('Delete this comment? This action cannot be undone.')) {
+    return;
+  }
+  
+  setDetailsLoading(true);
+  const result = await collaboration.deleteComment(commentId);
+  setDetailsLoading(false);
+  
+  if (result.error) {
+    toast.error(`Failed to delete comment: ${result.error.message || 'Unknown error'}`);
+  } else {
+    toast.success('Comment deleted');
+    // Remove from local state
+    setComments(prev => prev.filter(c => c.id !== commentId));
+  }
+};
+  
+const handleRestoreVersion = async (versionId: number) => {
     if (!collaboration) return;
   
-    const result = await collaboration.resolveComment(commentId);
-    if (result.error) {
-      toast.error('Failed to resolve comment');
-    } else {
-      toast.success('Comment resolved');
-      setComments(prev => prev.map(c => 
-        c.id === commentId ? { ...c, resolved: true } : c
-      ));
-    }
-  };    const handleRestoreVersion = async (versionId: number) => {
-      if (!collaboration) return;
+    setDetailsLoading(true);
+    const result = await collaboration.restoreVersion(versionId);
     
-      const result = await collaboration.restoreVersion(versionId);
-      if (result.error) {
-        toast.error('Failed to restore version');
-      } else {
-        toast.success('Version restored successfully');
-        // Refresh the note
-        if (detailsNoteId) {
-          await refreshOneNote(detailsNoteId);
-        }
-        // Reload version history
-        const { data: versionsData } = await collaboration.getVersionHistory();
-        if (versionsData) {
-          setVersions(versionsData);
-        }
+    if (result.error) {
+      toast.error('Failed to restore version');
+      setDetailsLoading(false);
+    } else {
+      toast.success('Version restored successfully');
+      // Refresh the note
+      if (detailsNoteId) {
+        await refreshOneNote(detailsNoteId);
       }
-    };
+      // Reload version history
+      const { data: versionsData } = await collaboration.getVersionHistory();
+      if (versionsData) {
+        setVersions(versionsData);
+      }
+      setDetailsLoading(false);
+    }
+  };
 
   // Derived filtered lists for rendering and keyboard nav
   const filteredGuestNotes = useMemo(() => {
@@ -1785,8 +1842,10 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
                   e.dataTransfer.setData('noteId', String(note.id));
                   e.dataTransfer.effectAllowed = 'move';
                 }}
-                style={{ cursor: 'grab' }}
+                onDoubleClick={() => handleOpenEdit(note)}
+                style={{ cursor: bulkActionMode ? 'grab' : 'pointer' }}
                 aria-selected={!bulkActionMode && focusedIndex === index}
+                title="Double-click to edit"
               >
                 <CardHeader>
                   <div className="flex items-start justify-between">
@@ -1904,27 +1963,26 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
                       >
                         <Edit className="h-4 w-4" />
                       </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={(e) => {
-                          const menu = document.createElement('div');
-                          menu.style.cssText = 'position:fixed;background:white;border:1px solid #ccc;border-radius:4px;padding:8px;z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,0.15)';
-                          menu.innerHTML = `
-                            <button onclick="this.parentElement.remove();window.exportNote(${note.id},'txt')" style="display:block;width:100%;padding:8px;text-align:left;border:none;background:none;cursor:pointer">Export as .txt</button>
-                            <button onclick="this.parentElement.remove();window.exportNote(${note.id},'md')" style="display:block;width:100%;padding:8px;text-align:left;border:none;background:none;cursor:pointer">Export as .md</button>
-                          `;
-                          document.body.appendChild(menu);
-                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                          menu.style.left = rect.left + 'px';
-                          menu.style.top = (rect.bottom + 4) + 'px';
-                            (window as Window & { exportNote?: (id: number, format: 'txt' | 'md') => void }).exportNote = (id: number, format: 'txt' | 'md') => handleExportNote(note, format);
-                        }}
-                        title="Export note"
-                        aria-label="Export note"
-                      >
-                        <Download className="h-4 w-4" />
-                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="Export note"
+                            aria-label="Export note"
+                          >
+                            <Download className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="max-h-[300px] overflow-y-auto">
+                          <DropdownMenuItem onClick={() => handleExportNote(note, 'txt')}>
+                            Export as .txt
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleExportNote(note, 'md')}>
+                            Export as .md
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                       <Button
                         variant="ghost"
                         size="icon"
@@ -2453,6 +2511,7 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
                    comments={comments}
                    onAddComment={handleAddComment}
                    onResolve={handleResolve}
+                   onDelete={handleDeleteComment}
                    currentUserId={userId || ''}
                  />
                )}
@@ -2474,8 +2533,8 @@ function History({ isGuest = false, selectedFolderId = null, userId, supabaseCli
              </TabsContent>
            </Tabs>
            <DialogFooter>
-             <Button variant="outline" onClick={handleCloseDetails}>
-               Close
+             <Button variant="outline" onClick={handleCloseDetails} disabled={detailsLoading || loadingVersions}>
+               {detailsLoading ? 'Closing...' : 'Close'}
              </Button>
            </DialogFooter>
          </DialogContent>

@@ -5,6 +5,7 @@ import useAsyncAction from '@/lib/useAsyncAction';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '@/lib/supabase';
 import type { Session } from '@supabase/supabase-js';
+import { initializeUsageTracking } from '@/lib/usageTracking';
 
 // Import tất cả các components giao diện cần thiết
 import { Button } from "@/components/ui/button";
@@ -129,6 +130,7 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
   const notesRef = useRef<HTMLTextAreaElement | null>(null);
   const urlRef = useRef<HTMLInputElement | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastVoiceTranscriptRef = useRef<string>('');
 
   // Hook cho Text-to-Speech
   const { speak, stop, isSpeaking, isSupported } = useSpeech();
@@ -136,6 +138,14 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
   // Initialize store with session/guest
   useEffect(() => {
     useSummarizerStore.setState({ session, isGuestMode });
+  }, [session, isGuestMode]);
+
+  // Initialize usage tracking
+  useEffect(() => {
+    const userId = session?.user?.id;
+    if (userId && !isGuestMode) {
+      initializeUsageTracking(userId);
+    }
   }, [session, isGuestMode]);
 
   // URL validation handled in store via setUrlInput
@@ -194,7 +204,7 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
   const [detectedUrl, setDetectedUrl] = useState<string | null>(null);
   
   useEffect(() => {
-    if (inputMode === 'text' && notes.trim()) {
+    if (inputMode === 'text' && notes && typeof notes === 'string' && notes.trim()) {
       const urlPattern = /(https?:\/\/[^\s]+)/g;
       const matches = notes.match(urlPattern);
       if (matches && matches.length > 0) {
@@ -461,7 +471,7 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
         key: 'Enter',
         ctrl: true,
         callback: () => {
-          if (!isLoading && ((inputMode === 'text' && notes.trim()) || (inputMode === 'url' && urlInput.trim()))) {
+          if (!isLoading && ((inputMode === 'text' && notes && typeof notes === 'string' && notes.trim()) || (inputMode === 'url' && urlInput.trim()))) {
             submitRef.current?.();
           }
         },
@@ -470,7 +480,7 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
       {
         ...commonShortcuts.save,
         callback: () => {
-          if (!isLoading && ((inputMode === 'text' && notes.trim()) || (inputMode === 'url' && urlInput.trim()))) {
+          if (!isLoading && ((inputMode === 'text' && notes && typeof notes === 'string' && notes.trim()) || (inputMode === 'url' && urlInput.trim()))) {
             submitRef.current?.();
           }
         }
@@ -533,7 +543,14 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
           {/* Workspace Selector */}
             <WorkspaceManager
               selectedWorkspaceId={selectedWorkspaceId}
-              onWorkspaceChange={setSelectedWorkspaceId}
+              onWorkspaceChange={(workspaceId) => {
+                console.log('[SummarizerApp] Workspace changed:', workspaceId);
+                setSelectedWorkspaceId(workspaceId);
+                // Reset folder when workspace changes
+                setSelectedFolderId(null);
+                // Clear notes input when switching workspaces
+                setNotes('');
+              }}
             />
 
           {/* Folder Sidebar */}
@@ -541,6 +558,7 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
             userId={session.user.id} 
             onFolderSelect={setSelectedFolderId}
             selectedFolderId={selectedFolderId}
+            selectedWorkspaceId={selectedWorkspaceId}
           />
         </aside>
       )}
@@ -933,7 +951,22 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
           {inputMode === 'text' && (
             <div className="flex gap-2 flex-wrap">
               <VoiceInputButton 
-                onTranscript={(text) => setNotes(notes + ' ' + text)}
+                onTranscript={(text) => {
+                  // Only append the new part of the transcript to avoid duplication
+                  if (text !== lastVoiceTranscriptRef.current) {
+                    // If this is a continuation, only add the new part
+                    if (text.startsWith(lastVoiceTranscriptRef.current)) {
+                      const newPart = text.slice(lastVoiceTranscriptRef.current.length).trim();
+                      if (newPart) {
+                        setNotes(notes + (notes ? ' ' : '') + newPart);
+                      }
+                    } else {
+                      // Completely new transcript, replace
+                      setNotes(notes + (notes ? ' ' : '') + text);
+                    }
+                    lastVoiceTranscriptRef.current = text;
+                  }
+                }}
                 className="flex-1 sm:flex-initial"
               />
               <EncryptionDialog 
@@ -955,7 +988,7 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
             size="lg"
             className="w-full text-lg font-semibold bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400"
             onClick={() => runSubmit(() => handleSubmit())}
-            disabled={isLoading || isSubmitting || (inputMode === 'text' ? !notes.trim() : (!urlInput.trim() || !isValidUrl))}
+            disabled={isLoading || isSubmitting || (inputMode === 'text' ? (!notes || typeof notes !== 'string' || !notes.trim()) : (!urlInput.trim() || !isValidUrl))}
             aria-label="Summarize"
           >
             {isLoading || isSubmitting ? "Processing..." : inputMode === 'url' ? 'Summarize URL' : t('summarize')}
@@ -1306,7 +1339,11 @@ function SummarizerApp({ session, isGuestMode }: { session: Session; isGuestMode
         
         {/* === HIỂN THỊ LỊCH SỬ GHI CHÚ === */}
         {!isGuestMode ? (
-          <History selectedFolderId={selectedFolderId} userId={session.user.id} />
+          <History 
+            selectedFolderId={selectedFolderId} 
+            selectedWorkspaceId={selectedWorkspaceId}
+            userId={session.user.id} 
+          />
         ) : (
           <History isGuest={true} />
         )}

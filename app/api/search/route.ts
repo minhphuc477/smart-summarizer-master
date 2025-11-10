@@ -20,7 +20,7 @@ export async function POST(req: Request) {
   const logger = createRequestLogger(req);
   
   try {
-    const { query, userId, folderId, matchCount = 5, matchThreshold = 0.78, filters } = await req.json();
+  const { query, userId, folderId, matchCount = 5, matchThreshold = 0.78, filters, lexicalOnly = false } = await req.json();
     
     logger.debug('Search request received', { 
       query: query?.substring(0, 50), 
@@ -33,6 +33,33 @@ export async function POST(req: Request) {
       logger.warn('Missing search query');
       const { body, status } = respondError('INVALID_INPUT', 'Search query is required.', 400);
       return NextResponse.json(body, { status });
+    }
+
+    // If caller requests lexical-only, skip semantic and perform keyword search directly
+    if (lexicalOnly) {
+      const supabase = await getServerSupabase();
+      try {
+        const likePattern = `%${query.trim().replace(/%/g, '')}%`;
+        const { data: lexical, error: lexErr } = await supabase
+          .from('notes')
+          .select('id, summary, original_notes, persona, created_at')
+          .ilike('summary', likePattern)
+          .limit(matchCount);
+        if (lexErr) {
+          logger.error('Lexical-only search failed', lexErr as Error);
+          return NextResponse.json({ error: 'Lexical search failed.', code: 'LEXICAL_FAILED' }, { status: 500 });
+        }
+        const results = (lexical || []).map((r) => ({ ...r, similarity: 0 }));
+        const totalDuration = Date.now() - startTime;
+        logger.info('Lexical-only search completed', undefined, { count: results.length, totalDuration });
+        logger.logResponse('POST', '/api/search', 200, totalDuration, { userId });
+        return NextResponse.json({ results, query, count: results.length, mode: 'lexical' });
+      } catch (lexOnlyCatch) {
+        const totalDuration = Date.now() - startTime;
+        logger.error('Error in lexical-only branch', lexOnlyCatch as Error);
+        logger.logResponse('POST', '/api/search', 500, totalDuration);
+        return NextResponse.json({ error: 'Lexical search failed.', code: 'LEXICAL_FAILED' }, { status: 500 });
+      }
     }
 
   // 1. Build query embedding (local, cached model)
@@ -70,20 +97,51 @@ export async function POST(req: Request) {
     let results = (dataPhase1 || []);
   const searchDuration = Date.now() - searchStart;
 
-    if (errorPhase1) {
+  if (errorPhase1) {
+      // Log the full error for debugging
+      logger.error('Semantic search RPC failed', errorPhase1 as Error, { 
+        procName, 
+        userId, 
+        folderId,
+        embeddingDim: queryEmbedding.length,
+        errorCode: (errorPhase1 as { code?: string }).code,
+        errorDetails: (errorPhase1 as { details?: string }).details,
+      });
+      
       // Normalize error message without using 'any'
       const errObj: unknown = errorPhase1;
       const errMsg = typeof errObj === 'object' && errObj !== null && 'message' in errObj
         ? String((errObj as { message: unknown }).message)
         : String(errObj);
-      if (errMsg.toLowerCase().includes('dimension mismatch')) {
-        logger.error('Semantic search RPC dimension mismatch', errorPhase1 as Error, { procName });
-        const { body, status } = respondError('INTERNAL', `Semantic search failed due to dimension mismatch. Expected ${EMBEDDING_DIMENSION}. Adjust database vector column or EMBEDDING_DIMENSION constant.`, 500);
-        return NextResponse.json(body, { status });
+  if (errMsg.toLowerCase().includes('dimension mismatch') || /expected\s*\d+/i.test(errMsg)) {
+  logger.warn('Semantic search RPC reported dimension mismatch — attempting to pad query embedding and retry', { procName, errMsg });
+        // Try to extract expected dimension and retry RPC padded
+        const m = errMsg.match(/expected\s*(\d+)/i);
+        if (m && m[1]) {
+          const expected = Number(m[1]);
+          if (expected > queryEmbedding.length) {
+            const padded = queryEmbedding.concat(new Array(expected - queryEmbedding.length).fill(0));
+            try {
+              const { data: retryData, error: retryErr } = await supabase.rpc(procName, { ...rpcArgs, query_embedding: padded, match_threshold: adjustedThreshold });
+              if (!retryErr) {
+                results = retryData || [];
+              } else {
+                logger.error('Retry RPC after padding failed', retryErr as Error, { procName });
+                const guidance = `Semantic search failed due to dimension mismatch. Expected ${EMBEDDING_DIMENSION}. Adjust vector column or EMBEDDING_DIMENSION.`;
+                return NextResponse.json({ error: guidance, code: 'SEMANTIC_DIMENSION_MISMATCH' }, { status: 500 });
+              }
+            } catch (retryCatch) {
+              logger.error('Retry RPC after padding threw', retryCatch as Error, { procName });
+              const guidance = `Semantic search failed due to dimension mismatch. Expected ${EMBEDDING_DIMENSION}. Adjust vector column or EMBEDDING_DIMENSION.`;
+              return NextResponse.json({ error: guidance, code: 'SEMANTIC_DIMENSION_MISMATCH' }, { status: 500 });
+            }
+          }
+        }
+        // If we couldn't patch, return original guidance
+        return NextResponse.json({ error: `Semantic search failed due to dimension mismatch. Expected ${EMBEDDING_DIMENSION}. Adjust vector column or EMBEDDING_DIMENSION.`, code: 'SEMANTIC_DIMENSION_MISMATCH' }, { status: 500 });
       }
       logger.error("Semantic search error (phase1)", errorPhase1 as Error, { userId, procName });
-      const { body, status } = respondError('INTERNAL', "Failed to search notes. Ensure semantic-search migration SQL ran.", 500);
-      return NextResponse.json(body, { status });
+      return NextResponse.json({ error: 'Failed to search notes. Ensure semantic-search migration SQL ran.', code: 'SEMANTIC_RPC_FAILED' }, { status: 500 });
     }
 
     // Phase 2 fallback: broaden threshold to almost zero to get top similarities even if low
@@ -98,6 +156,7 @@ export async function POST(req: Request) {
     }
 
     // Phase 3 lexical fallback: if still empty, run ILIKE search on summary/original_notes
+    let usedLexicalFallback = false;
     if ((!results || results.length === 0) && query.trim().length >= 2) {
       logger.info('Semantic empty; performing lexical fallback');
       try {
@@ -110,6 +169,7 @@ export async function POST(req: Request) {
         if (!lexErr && lexical && lexical.length > 0) {
           // Attach pseudo similarity (0) so client can still display deterministically
           results = lexical.map(r => ({ ...r, similarity: 0 }));
+          usedLexicalFallback = true;
           logger.info('Lexical fallback produced results', undefined, { count: results.length });
         } else {
           logger.info('Lexical fallback produced no results');
@@ -118,7 +178,7 @@ export async function POST(req: Request) {
         logger.warn('Lexical fallback threw error');
       }
     }
-  // Normalize similarity range if needed (ensure number)
+    // Normalize similarity range if needed (ensure number)
   type RawResult = { id: number; summary?: string; original_notes?: string; persona?: string; created_at?: string; similarity?: number };
   results = (results as RawResult[]).map((r: RawResult) => ({ ...r, similarity: typeof r.similarity === 'number' ? r.similarity : 0 }));
 
@@ -215,7 +275,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ 
       results,
       query: query,
-      count: results.length 
+      count: results.length,
+      mode: usedLexicalFallback ? 'lexical' : 'semantic'
     });
 
   } catch (error: unknown) {

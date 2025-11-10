@@ -134,6 +134,12 @@ export async function DELETE(
       return NextResponse.json({ error: 'Failed to delete PDF' }, { status: 500 });
     }
 
+    // Explicitly delete from processing queue (belt and suspenders with CASCADE)
+    await supabase
+      .from('pdf_processing_queue')
+      .delete()
+      .eq('pdf_document_id', id);
+
     // Best-effort storage deletion (ignore errors)
     if (pdfDoc.storage_path) {
       try {

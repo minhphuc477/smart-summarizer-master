@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
 
     // Build base select, optionally inner-joining tags if hasTags=true
     const joinTagsInner = hasTags === 'true';
-  const selectString = `id,created_at,summary,persona,sentiment,folder_id,is_public,share_id,workspace_id,folders(id,name,color),note_tags${joinTagsInner ? '!inner' : ''}(tags${joinTagsInner ? '!inner' : ''}(id,name))`;
+  const selectString = `id,created_at,summary,persona,sentiment,folder_id,is_public,share_id,workspace_id,takeaways,actions,folders(id,name,color),note_tags${joinTagsInner ? '!inner' : ''}(tags${joinTagsInner ? '!inner' : ''}(id,name))`;
 
     let query = supabase
       .from('notes')

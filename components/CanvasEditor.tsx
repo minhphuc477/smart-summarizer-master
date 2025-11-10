@@ -20,10 +20,11 @@ import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { useKeyboardShortcuts, commonShortcuts } from '@/lib/useKeyboardShortcuts';
 import { Input } from '@/components/ui/input';
-import { Save, Plus, Download, FileJson, Share2, Image as ImageIcon, Sparkles, Network, Grid3x3, Circle, GitBranch, CheckSquare, Link as LinkIcon, Code2, Palette, Shapes, Route, Layers, PanelsTopLeft, Users, FolderInput, FileText } from 'lucide-react';
+import { Save, Plus, Download, FileJson, Share2, Image as ImageIcon, Sparkles, Network, Grid3x3, Circle, GitBranch, CheckSquare, Link as LinkIcon, Code2, Palette, Shapes, Route, Layers, PanelsTopLeft, Users, FolderInput, FileText, History } from 'lucide-react';
 import { CanvasTemplateSelector } from '@/components/CanvasTemplateSelector';
 import { CanvasTemplateSaveDialog } from '@/components/CanvasTemplateSaveDialog';
 import { ImportNotesDialog } from '@/components/ImportNotesDialog';
+import CanvasVersionHistory from '@/components/versions/CanvasVersionHistory';
 import { useCollaborativeCanvas, useCursorBroadcast } from '@/lib/realtime/useCollaborativeCanvas';
 import { LiveCursors } from '@/components/collaboration/LiveCursors';
 import { PresenceIndicator } from '@/components/collaboration/PresenceIndicator';
@@ -36,6 +37,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { applyLayout, type LayoutType } from '@/lib/canvasLayouts';
 import {
   ContextMenu,
@@ -130,6 +137,7 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
   const [collaborationEnabled, setCollaborationEnabled] = useState(false);
   const [user, setUser] = useState<{ id: string; email?: string; name?: string; avatar?: string } | null>(null);
   const [importNotesOpen, setImportNotesOpen] = useState(false);
+    const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const undoStack = useRef<Array<{ nodes: Node[]; edges: Edge[]; title: string }>>([]);
   const redoStack = useRef<Array<{ nodes: Node[]; edges: Edge[]; title: string }>>([]);
@@ -245,7 +253,7 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasId]);
 
-  const loadCanvas = async (id: string) => {
+  const loadCanvas = useCallback(async (id: string) => {
     try {
       const response = await fetch(`/api/canvases/${id}`);
       if (response.ok) {
@@ -309,13 +317,22 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
     } catch (error) {
       console.error('Error loading canvas:', error);
     }
-  };
+  }, [setNodes, setEdges]);
 
   const snapshot = useCallback(() => ({
     nodes: JSON.parse(JSON.stringify(nodes)) as Node[],
     edges: JSON.parse(JSON.stringify(edges)) as Edge[],
     title,
   }), [nodes, edges, title]);
+
+    // Handle version restore - reload the canvas after a version is restored
+    const handleVersionRestore = useCallback(() => {
+      if (currentCanvasId) {
+        loadCanvas(currentCanvasId);
+        toast.success('Canvas restored from history');
+        setVersionHistoryOpen(false);
+      }
+      }, [currentCanvasId, loadCanvas]);
 
   const pushUndo = useCallback(() => {
     undoStack.current.push(snapshot());
@@ -388,8 +405,8 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
       canvas: { background: { variant: BackgroundVariant.Dots, gap: 12, size: 1 } },
     },
     'dark-slate': {
-      node: { bg: '#0b1220', border: '#1f2937', text: '#e5e7eb' },
-      edge: { color: '#374151' },
+      node: { bg: '#1e293b', border: '#475569', text: '#f1f5f9' },
+      edge: { color: '#64748b' },
       canvas: { background: { variant: BackgroundVariant.Dots, gap: 14, size: 1 } },
     },
     'mind-map': {
@@ -495,14 +512,39 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
   // Handle loading a template
   const handleLoadTemplate = useCallback((template: { nodes: Node[]; edges: Edge[]; viewport?: { x: number; y: number; zoom: number } }) => {
     pushUndo();
-    setNodes(template.nodes);
+    // Ensure all template nodes are draggable, selectable, and have proper data structure
+    const editableNodes = template.nodes.map(node => {
+      const baseNode = {
+        ...node,
+        draggable: true,
+        selectable: true,
+        connectable: true,
+      };
+      
+      // For stickyNote nodes, ensure data.text exists and editing is enabled
+      if (node.type === 'stickyNote') {
+        return {
+          ...baseNode,
+          data: {
+            ...node.data,
+            text: node.data.text || node.data.label || 'Edit me',
+            // Don't set editing: false - let the node component handle click/double-click
+          }
+        };
+      }
+      
+      // For other node types, preserve their data structure
+      return baseNode;
+    });
+    
+    setNodes(editableNodes);
     setEdges(template.edges);
     if (template.viewport) {
       setTimeout(() => {
         fitView({ padding: 0.2, ...template.viewport });
       }, 100);
     }
-    toast.success('Template loaded successfully!');
+    toast.success('Template loaded! Double-click nodes to edit.');
   }, [pushUndo, setNodes, setEdges, fitView]);
 
   const addStickyNote = () => {
@@ -584,6 +626,9 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
     takeaways: string[];
     actions: Array<{ task: string; datetime?: string | null }>;
   }>) => {
+    console.log('[CanvasEditor] handleImportNotes called with', notes.length, 'notes');
+    console.log('[CanvasEditor] First note:', notes[0]);
+    
     if (notes.length === 0) return;
     
     pushUndo();
@@ -598,6 +643,13 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
     const startY = 100;
     
     notes.forEach((note, index) => {
+      console.log(`[CanvasEditor] Processing note ${index + 1}/${notes.length}:`, {
+        id: note.id,
+        summary: note.summary?.substring(0, 50),
+        takeawaysCount: note.takeaways?.length || 0,
+        actionsCount: note.actions?.length || 0
+      });
+      
       const row = Math.floor(index / cols);
       const col = index % cols;
       const x = startX + col * spacing;
@@ -607,10 +659,11 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
       const summaryNodeId = `note-${note.id}-summary`;
       newNodes.push({
         id: summaryNodeId,
-        type: 'default',
+        type: 'stickyNote',
         position: { x, y },
         data: { 
-          label: note.summary,
+          text: note.summary,
+          editing: false,
         },
         style: {
           backgroundColor: '#ffffff', // will be overridden by theme apply if user changes theme
@@ -627,12 +680,15 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
         const takeawayId = `note-${note.id}-takeaway-${tIdx}`;
         newNodes.push({
           id: takeawayId,
-          type: 'default',
+          type: 'stickyNote',
           position: { 
             x: x - 100 + tIdx * 120, 
             y: y + 120 
           },
-          data: { label: takeaway },
+          data: { 
+            text: takeaway,
+            editing: false,
+          },
           style: {
             backgroundColor: '#fff7ed',
             border: '2px solid #fb923c',
@@ -658,12 +714,15 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
         const actionId = `note-${note.id}-action-${aIdx}`;
         newNodes.push({
           id: actionId,
-          type: 'default',
+          type: 'stickyNote',
           position: { 
             x: x + 280, 
             y: y + aIdx * 80 
           },
-          data: { label: action.task },
+          data: { 
+            text: action.task,
+            editing: false,
+          },
           style: {
             backgroundColor: '#f0fdf4',
             border: '2px solid #22c55e',
@@ -684,6 +743,8 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
         });
       });
     });
+    
+    console.log('[CanvasEditor] Created', newNodes.length, 'nodes and', newEdges.length, 'edges');
     
     setNodes(prev => [...prev, ...newNodes]);
     setEdges(prev => [...prev, ...newEdges]);
@@ -758,15 +819,14 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
     // Add a new node with the suggested concept
     const newNode: Node = {
       id: `node-${Date.now()}`,
-      type: 'note',
+      type: 'stickyNote',
       position: {
         x: Math.random() * 400 + 100,
         y: Math.random() * 400 + 100,
       },
       data: {
-        label: concept,
-        color: '#000',
-        backgroundColor: '#fef3c7',
+        text: concept,
+        editing: false,
       },
       style: {
         width: 200,
@@ -855,11 +915,14 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
 
       if (currentCanvasId) {
         // Update existing canvas
-        await fetch(`/api/canvases/${currentCanvasId}`, {
+        const response = await fetch(`/api/canvases/${currentCanvasId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title, description: canvasDescription, nodes: dbNodes, edges: dbEdges }),
         });
+        
+        if (!response.ok) throw new Error('Failed to save canvas');
+        toast.success('Canvas saved successfully!');
       } else {
         // Create new canvas
         const response = await fetch('/api/canvases', {
@@ -867,20 +930,26 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title, description: canvasDescription, workspace_id: workspaceId }),
         });
+        
+        if (!response.ok) throw new Error('Failed to create canvas');
         const data = await response.json();
         setCurrentCanvasId(data.canvas.id);
         
         // Save nodes and edges
-        await fetch(`/api/canvases/${data.canvas.id}`, {
+        const saveResponse = await fetch(`/api/canvases/${data.canvas.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ description: canvasDescription, nodes: dbNodes, edges: dbEdges }),
         });
+        
+        if (!saveResponse.ok) throw new Error('Failed to save canvas content');
+        toast.success('Canvas created and saved!');
       }
       
       onSave?.();
     } catch (error) {
       console.error('Error saving canvas:', error);
+      toast.error('Failed to save canvas. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -899,27 +968,47 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
 
   const exportAsPNG = async () => {
     if (!canvasRef.current) return;
-    
     try {
-      // Get the ReactFlow viewport element
+      // Prefer capturing full react-flow wrapper (includes edges & nodes)
+      const wrapper = canvasRef.current.querySelector('.react-flow') as HTMLElement;
+      const target = wrapper || canvasRef.current;
+      if (!target) return;
+
+      // Determine background color from current theme
+      const isDarkTheme = currentTheme === 'dark-slate';
+      const exportBgColor = isDarkTheme ? '#0f172a' : '#ffffff';
+
+      // Dynamically import html-to-image to avoid SSR issues
+      const { toPng } = await import('html-to-image');
+      const dataUrl = await toPng(target, {
+        pixelRatio: 2,
+        backgroundColor: exportBgColor,
+        cacheBust: true,
+        filter: (node) => {
+          // Skip minimap & command dialogs from export for clarity
+          if (node instanceof HTMLElement && node.classList.contains('react-flow__minimap')) return false;
+          return true;
+        }
+      });
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = `${title}.png`;
+      link.click();
+    } catch (error) {
+      console.error('Error exporting as PNG (html-to-image failed, falling back):', error);
+      // Fallback: use theme-appropriate background color
+      const isDarkTheme = currentTheme === 'dark-slate';
+      const fallbackBg = isDarkTheme ? '#0f172a' : '#ffffff';
       const viewport = canvasRef.current.querySelector('.react-flow__viewport') as HTMLElement;
       if (!viewport) return;
-
-      // Create a canvas from the viewport
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      // Set canvas size based on viewport
       const bounds = viewport.getBoundingClientRect();
+      const canvas = document.createElement('canvas');
       canvas.width = bounds.width;
       canvas.height = bounds.height;
-
-      // Fill with white background
-      ctx.fillStyle = '#ffffff';
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.fillStyle = fallbackBg;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // Convert to data URL
       canvas.toBlob((blob) => {
         if (blob) {
           const url = URL.createObjectURL(blob);
@@ -930,8 +1019,6 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
           URL.revokeObjectURL(url);
         }
       });
-    } catch (error) {
-      console.error('Error exporting as PNG:', error);
     }
   };
 
@@ -1137,17 +1224,57 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
     setNodes(result);
   };
 
+  // Change node color
+  const changeNodeColor = (color: string) => {
+    const selected = nodes.filter(n => n.selected);
+    if (selected.length === 0) {
+      toast.info('Select a node to change color');
+      return;
+    }
+    pushUndo();
+    setNodes(prev => prev.map(n => {
+      if (!n.selected) return n;
+      return {
+        ...n,
+        style: {
+          ...n.style,
+          backgroundColor: color,
+          border: `2px solid ${color}CC`, // Slightly darker border
+        },
+      };
+    }));
+    toast.success('Node color updated');
+  };
+
   return (
     <div className="h-screen flex flex-col">
       {/* Toolbar */}
-      <div className="border-b bg-background p-4 flex items-center gap-4">
+      <div className="border-b bg-background p-4 flex flex-col sm:flex-row items-start sm:items-center gap-3">
         <Input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          className="max-w-md"
+          className="w-full sm:max-w-md"
           placeholder="Canvas title"
         />
-        <div className="flex gap-2 ml-auto">
+        <div className="flex flex-wrap gap-2 w-full sm:w-auto sm:ml-auto">
+          {/* Primary action - Save button - always visible first */}
+          <Button onClick={saveCanvas} disabled={saving} size="sm" className="order-first">
+            <Save className="h-4 w-4 mr-2" />
+            {saving ? 'Saving...' : 'Save Canvas'}
+          </Button>
+          
+            {/* Version History button */}
+            <Button 
+              onClick={() => setVersionHistoryOpen(true)} 
+              variant="outline" 
+              size="sm"
+              disabled={!currentCanvasId}
+              title={currentCanvasId ? 'View save history' : 'Save canvas first to view history'}
+            >
+              <History className="h-4 w-4 mr-2" />
+              History
+            </Button>
+          
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm">
@@ -1308,11 +1435,6 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
             {loadingSuggestions ? 'Thinking...' : 'AI Suggest'}
           </Button>
           
-          <Button onClick={saveCanvas} disabled={saving} size="sm">
-            <Save className="h-4 w-4 mr-2" />
-            {saving ? 'Saving...' : 'Save'}
-          </Button>
-          
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm">
@@ -1378,6 +1500,9 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
                 onEdgesChange={handleEdgesChange}
                 onConnect={onConnect}
                 nodeTypes={nodeTypes}
+                nodesDraggable={true}
+                nodesConnectable={true}
+                elementsSelectable={true}
                 selectionOnDrag
                 fitView
                 deleteKeyCode={null}
@@ -1397,7 +1522,7 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
               )}
             </div>
           </ContextMenuTrigger>
-          <ContextMenuContent>
+          <ContextMenuContent className="max-h-[80vh] overflow-y-auto">
             <ContextMenuLabel>Add Nodes</ContextMenuLabel>
             <ContextMenuItem onClick={addStickyNote}>
               <Plus className="h-4 w-4 mr-2" />
@@ -1430,6 +1555,26 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
             </ContextMenuItem>
             <ContextMenuItem onClick={ungroupSelection}>
               <PanelsTopLeft className="h-4 w-4 mr-2" /> Ungroup Selection
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuLabel>Node Color</ContextMenuLabel>
+            <ContextMenuItem onClick={() => changeNodeColor('#fef3c7')}>
+              <div className="w-4 h-4 mr-2 rounded" style={{ backgroundColor: '#fef3c7' }}></div> Yellow
+            </ContextMenuItem>
+            <ContextMenuItem onClick={() => changeNodeColor('#fecaca')}>
+              <div className="w-4 h-4 mr-2 rounded" style={{ backgroundColor: '#fecaca' }}></div> Red
+            </ContextMenuItem>
+            <ContextMenuItem onClick={() => changeNodeColor('#bfdbfe')}>
+              <div className="w-4 h-4 mr-2 rounded" style={{ backgroundColor: '#bfdbfe' }}></div> Blue
+            </ContextMenuItem>
+            <ContextMenuItem onClick={() => changeNodeColor('#bbf7d0')}>
+              <div className="w-4 h-4 mr-2 rounded" style={{ backgroundColor: '#bbf7d0' }}></div> Green
+            </ContextMenuItem>
+            <ContextMenuItem onClick={() => changeNodeColor('#e9d5ff')}>
+              <div className="w-4 h-4 mr-2 rounded" style={{ backgroundColor: '#e9d5ff' }}></div> Purple
+            </ContextMenuItem>
+            <ContextMenuItem onClick={() => changeNodeColor('#fed7aa')}>
+              <div className="w-4 h-4 mr-2 rounded" style={{ backgroundColor: '#fed7aa' }}></div> Orange
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuLabel>Layout</ContextMenuLabel>
@@ -1587,6 +1732,23 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
         onImport={handleImportNotes}
         workspaceId={workspaceId}
       />
+
+        {/* Canvas Version History Dialog */}
+        {versionHistoryOpen && currentCanvasId && (
+          <Dialog open={versionHistoryOpen} onOpenChange={setVersionHistoryOpen}>
+            <DialogContent className="max-w-3xl max-h-[85vh] overflow-hidden flex flex-col">
+              <DialogHeader>
+                <DialogTitle>Canvas Version History</DialogTitle>
+              </DialogHeader>
+              <div className="flex-1 overflow-auto">
+                <CanvasVersionHistory
+                  canvasId={currentCanvasId}
+                  onRestore={handleVersionRestore}
+                />
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
     </div>
   );
 }

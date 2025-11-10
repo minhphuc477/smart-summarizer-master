@@ -32,81 +32,84 @@ describe('/api/analytics', () => {
     jest.clearAllMocks();
     
     const { getServerSupabase } = require('@/lib/supabaseServer');
+    // The route expects a shape like { supabase: { auth, from, rpc } }, so return the mocked client under `supabase`.
     getServerSupabase.mockResolvedValue({
-      auth: { 
-        getUser: jest.fn(async () => ({ 
-          data: { user: { id: 'user-1' } }, 
-          error: null 
-        })) 
-      },
-      from: jest.fn((table: string) => {
-        if (table === 'user_analytics') {
-          return {
-            select: () => ({
-              eq: () => ({
-                gte: () => ({
-                  order: () => ({ 
-                    data: [{ date: '2025-01-01', notes_created: 5 }], 
-                    error: null 
+      supabase: {
+        auth: { 
+          getUser: jest.fn(async () => ({ 
+            data: { user: { id: 'user-1' } }, 
+            error: null 
+          })) 
+        },
+        from: jest.fn((table: string) => {
+          if (table === 'user_analytics') {
+            return {
+              select: () => ({
+                eq: () => ({
+                  gte: () => ({
+                    order: () => ({ 
+                      data: [{ date: '2025-01-01', notes_created: 5 }], 
+                      error: null 
+                    })
                   })
                 })
               })
-            })
-          } as any;
-        }
-        if (table === 'usage_events') {
-          return {
-            select: () => ({
-              eq: () => ({
-                order: () => ({
-                  limit: () => ({ 
-                    data: [], 
-                    error: null 
+            } as any;
+          }
+          if (table === 'usage_events') {
+            return {
+              select: () => ({
+                eq: () => ({
+                  order: () => ({
+                    limit: () => ({ 
+                      data: [], 
+                      error: null 
+                    })
+                  })
+                })
+              }),
+              insert: () => ({ data: null, error: null }),
+            } as any;
+          }
+          if (table === 'note_tags') {
+            return {
+              select: () => ({
+                limit: () => ({ 
+                  data: [{ tags: { name: 'work' } }], 
+                  error: null 
+                })
+              })
+            } as any;
+          }
+          if (table === 'notes') {
+            return {
+              select: () => ({
+                eq: () => ({
+                  gte: () => ({
+                    order: () => ({ 
+                      data: [{ sentiment: 'positive', created_at: '2025-01-01' }], 
+                      error: null 
+                    })
                   })
                 })
               })
-            }),
-            insert: () => ({ data: null, error: null }),
-          } as any;
-        }
-        if (table === 'note_tags') {
-          return {
-            select: () => ({
-              limit: () => ({ 
-                data: [{ tags: { name: 'work' } }], 
-                error: null 
-              })
-            })
-          } as any;
-        }
-        if (table === 'notes') {
-          return {
-            select: () => ({
-              eq: () => ({
-                gte: () => ({
-                  order: () => ({ 
-                    data: [{ sentiment: 'positive', created_at: '2025-01-01' }], 
-                    error: null 
-                  })
-                })
-              })
-            })
-          } as any;
-        }
-        return { select: () => ({ data: [], error: null }) } as any;
-      }),
-      rpc: jest.fn((fn: string) => {
-        if (fn === 'get_user_analytics_summary') {
-          return {
-            single: jest.fn(async () => ({
-              data: { total_notes: 10, total_summaries: 10 },
-              error: null,
-            })),
-          } as any;
-        }
-        // increment_user_analytics or others
-        return {} as any;
-      })
+            } as any;
+          }
+          return { select: () => ({ data: [], error: null }) } as any;
+        }),
+        rpc: jest.fn((fn: string) => {
+          if (fn === 'get_user_analytics_summary') {
+            return {
+              single: jest.fn(async () => ({
+                data: { total_notes: 10, total_summaries: 10 },
+                error: null,
+              })),
+            } as any;
+          }
+          // For other RPC calls return a response-shaped object so callers that expect { data, error } or chain .catch won't throw
+          return { data: null, error: null } as any;
+        })
+      }
     });
   });
   

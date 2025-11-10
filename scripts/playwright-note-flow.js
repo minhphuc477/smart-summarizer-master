@@ -41,7 +41,7 @@ const __dirname = path.dirname(__filename);
         body = (await res.text().catch(() => null))?.slice(0, 200);
       }
       requests.push({ url: res.url(), status: res.status(), body, timestamp: Date.now(), type: 'response' });
-    } catch (e) {
+    } catch (_e) {
       // ignore
     }
   });
@@ -77,7 +77,7 @@ const __dirname = path.dirname(__filename);
           console.log('Clicked selector', sel);
           break;
         }
-      } catch (e) {
+      } catch (_e) {
         // ignore
       }
     }
@@ -95,11 +95,9 @@ const __dirname = path.dirname(__filename);
     await page.waitForTimeout(1000);
 
     const dialogSelectors = ['dialog', '[role="dialog"]', '.note-details', '.details-dialog', '.modal'];
-    let dialogFound = false;
     for (const s of dialogSelectors) {
       const d = await page.$(s);
       if (d) {
-        dialogFound = true;
         console.log('Found dialog using', s);
         break;
       }
@@ -114,7 +112,6 @@ const __dirname = path.dirname(__filename);
       '[data-testid="comment-input"]'
     ];
 
-    let commentPosted = false;
     for (const cs of commentSelectors) {
       const el = await page.$(cs);
       if (el) {
@@ -125,16 +122,14 @@ const __dirname = path.dirname(__filename);
           const postBtn = await page.$('button:has-text("Post"), button:has-text("Send"), button:has-text("Reply")');
           if (postBtn) {
             await postBtn.click();
-            commentPosted = true;
             console.log('Clicked Post button');
           } else {
             // Press Enter if it's an input
             await el.press('Enter').catch(() => {});
             console.log('Pressed Enter on comment input');
-            commentPosted = true;
           }
           break;
-        } catch (e) {
+        } catch (_e) {
           // ignore
         }
       }

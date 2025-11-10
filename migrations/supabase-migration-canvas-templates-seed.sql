@@ -374,7 +374,7 @@ INSERT INTO canvas_templates (
     {
       "id": "decision",
       "type": "default",
-      "position": {"x": 350, "y": 50},
+      "position": {"x": 400, "y": 50},
       "data": {"label": "Decision: [Your Choice]"},
       "style": {
         "backgroundColor": "#6366f1",
@@ -391,7 +391,7 @@ INSERT INTO canvas_templates (
     {
       "id": "pros-header",
       "type": "default",
-      "position": {"x": 200, "y": 180},
+      "position": {"x": 150, "y": 200},
       "data": {"label": "✓ PROS"},
       "style": {
         "backgroundColor": "#22c55e",
@@ -408,28 +408,28 @@ INSERT INTO canvas_templates (
     {
       "id": "pro1",
       "type": "default",
-      "position": {"x": 210, "y": 260},
+      "position": {"x": 150, "y": 290},
       "data": {"label": "Advantage 1"},
       "style": {"backgroundColor": "#f0fdf4", "border": "1px solid #22c55e", "borderRadius": "6px", "padding": "10px"}
     },
     {
       "id": "pro2",
       "type": "default",
-      "position": {"x": 210, "y": 330},
+      "position": {"x": 150, "y": 360},
       "data": {"label": "Advantage 2"},
       "style": {"backgroundColor": "#f0fdf4", "border": "1px solid #22c55e", "borderRadius": "6px", "padding": "10px"}
     },
     {
       "id": "pro3",
       "type": "default",
-      "position": {"x": 210, "y": 400},
+      "position": {"x": 150, "y": 430},
       "data": {"label": "Advantage 3"},
       "style": {"backgroundColor": "#f0fdf4", "border": "1px solid #22c55e", "borderRadius": "6px", "padding": "10px"}
     },
     {
       "id": "cons-header",
       "type": "default",
-      "position": {"x": 500, "y": 180},
+      "position": {"x": 550, "y": 200},
       "data": {"label": "✗ CONS"},
       "style": {
         "backgroundColor": "#ef4444",
@@ -446,21 +446,21 @@ INSERT INTO canvas_templates (
     {
       "id": "con1",
       "type": "default",
-      "position": {"x": 510, "y": 260},
+      "position": {"x": 550, "y": 290},
       "data": {"label": "Disadvantage 1"},
       "style": {"backgroundColor": "#fee2e2", "border": "1px solid #ef4444", "borderRadius": "6px", "padding": "10px"}
     },
     {
       "id": "con2",
       "type": "default",
-      "position": {"x": 510, "y": 330},
+      "position": {"x": 550, "y": 360},
       "data": {"label": "Disadvantage 2"},
       "style": {"backgroundColor": "#fee2e2", "border": "1px solid #ef4444", "borderRadius": "6px", "padding": "10px"}
     },
     {
       "id": "con3",
       "type": "default",
-      "position": {"x": 510, "y": 400},
+      "position": {"x": 550, "y": 430},
       "data": {"label": "Disadvantage 3"},
       "style": {"backgroundColor": "#fee2e2", "border": "1px solid #ef4444", "borderRadius": "6px", "padding": "10px"}
     }

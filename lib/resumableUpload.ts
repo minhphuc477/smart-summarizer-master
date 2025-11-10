@@ -68,20 +68,41 @@ export class ResumableUpload {
         }
       }
       if (!this.uploadUrl) {
-        const createResp = await fetch(`${this.opts.supabaseUrl}/storage/v1/upload/resumable`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${this.opts.supabaseAnonKey}`,
-            'Upload-Length': String(this.opts.file.size),
-            'Tus-Resumable': '1.0.0',
-            'Upload-Metadata': `filename ${btoa(unescape(encodeURIComponent(this.opts.file.name)))}`,
-            'x-upsert': 'false'
+        // Build proper TUS endpoint for Supabase Storage
+        const tusEndpoint = `${this.opts.supabaseUrl}/storage/v1/upload/resumable`;
+        const path = `${this.opts.bucket}/${this.opts.userId}/${Date.now()}-${this.opts.file.name}`;
+        
+        try {
+          const createResp = await fetch(tusEndpoint, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${this.opts.supabaseAnonKey}`,
+              'Upload-Length': String(this.opts.file.size),
+              'Tus-Resumable': '1.0.0',
+              'Upload-Metadata': `bucketName ${btoa(this.opts.bucket)},objectName ${btoa(path)},contentType ${btoa(this.opts.file.type || 'application/pdf')},cacheControl ${btoa('3600')}`,
+              'x-upsert': 'false'
+            }
+          });
+          
+          if (!createResp.ok) {
+            const errorText = await createResp.text().catch(() => 'Unknown error');
+            console.error('TUS create upload failed:', {
+              status: createResp.status,
+              statusText: createResp.statusText,
+              error: errorText,
+              endpoint: tusEndpoint,
+              bucket: this.opts.bucket
+            });
+            throw new Error(`Failed to create resumable upload: ${createResp.status} - ${errorText}`);
           }
-        });
-        if (!createResp.ok) throw new Error('Failed to create resumable upload');
-        this.uploadUrl = createResp.headers.get('Location');
-        if (!this.uploadUrl) throw new Error('Missing upload URL');
-        if (typeof localStorage !== 'undefined') localStorage.setItem(`tus-url:${fp}`, this.uploadUrl);
+          
+          this.uploadUrl = createResp.headers.get('Location');
+          if (!this.uploadUrl) throw new Error('Missing upload URL in Location header');
+          if (typeof localStorage !== 'undefined') localStorage.setItem(`tus-url:${fp}`, this.uploadUrl);
+        } catch (createError) {
+          console.error('Error creating resumable upload:', createError);
+          throw createError;
+        }
       }
       await this.sendChunks();
     } catch (e) {

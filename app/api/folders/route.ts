@@ -3,7 +3,7 @@ import { getServerSupabase } from "@/lib/supabaseServer";
 
 // GET: List all folders for current user
 // POST: Create new folder
-export async function GET(_request: Request) {
+export async function GET(request: Request) {
   try {
     const supabase = await getServerSupabase();
     // Check authentication
@@ -24,8 +24,17 @@ export async function GET(_request: Request) {
       );
     }
 
-    // Fetch folders directly (more reliable than view with RLS)
-    const { data: folders, error } = await supabase
+    // Get workspace_id from query parameters
+    const { searchParams } = new URL(request.url);
+    const workspaceId = searchParams.get('workspace_id');
+
+    console.log('🔍 Folders API - Query params:', {
+      workspaceId,
+      url: request.url,
+    });
+
+    // Build query
+    let query = supabase
       .from('folders')
       .select(`
         id,
@@ -37,8 +46,17 @@ export async function GET(_request: Request) {
         created_at,
         updated_at
       `)
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
+      .eq('user_id', user.id);
+
+    // Filter by workspace if specified
+    if (workspaceId) {
+      query = query.eq('workspace_id', workspaceId);
+    } else {
+      // If no workspace specified, only show personal folders (workspace_id is null)
+      query = query.is('workspace_id', null);
+    }
+
+    const { data: folders, error } = await query.order('created_at', { ascending: false });
 
     if (error) {
       console.error('Error fetching folders:', error);
@@ -47,6 +65,11 @@ export async function GET(_request: Request) {
         { status: 500 }
       );
     }
+
+    console.log('✅ Folders API - Success:', {
+      folderCount: folders?.length,
+      workspaceId,
+    });
 
     return NextResponse.json({ folders: folders || [] });
 

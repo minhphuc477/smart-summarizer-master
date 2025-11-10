@@ -30,6 +30,18 @@ import {
 } from 'lucide-react';
 import type { Session } from '@supabase/supabase-js';
 
+// Safe JSON parser for fetch responses (handles empty body and invalid JSON gracefully)
+type JsonLike = Record<string, unknown> | unknown[] | null;
+async function safeJson<T extends JsonLike = JsonLike>(response: Response): Promise<T | null> {
+  try {
+    const text = await response.text();
+    if (!text) return null;
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
 interface WebhookData {
   id: string;
   url: string;
@@ -81,16 +93,37 @@ const AVAILABLE_EVENTS = [
   const [selectedEvents, setSelectedEvents] = useState<string[]>([]);
   const [enabled, setEnabled] = useState(true);
 
-  const fetchWebhooks = useCallback(async (_session?: unknown) => {
+  const fetchWebhooks = useCallback(async () => {
     setLoading(true);
+    setError(null);
+    
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    
     try {
-      const response = await fetch('/api/v1/webhooks');
-      if (!response.ok) throw new Error('Failed to fetch webhooks');
+      const response = await fetch('/api/webhooks', {
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
       
-      const data = await response.json();
-      setWebhooks(data.webhooks || []);
+      if (!response.ok) {
+        if (response.status === 401) {
+          setError('Please sign in to manage webhooks');
+          setLoading(false);
+          return;
+        }
+        throw new Error('Failed to fetch webhooks');
+      }
+      
+      const parsed = await safeJson<{ webhooks?: WebhookData[] }>(response);
+      setWebhooks(Array.isArray(parsed?.webhooks) ? parsed!.webhooks! : []);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load webhooks');
+      clearTimeout(timeout);
+      if ((err as Error).name === 'AbortError') {
+        setError('Request timeout - please try again');
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to load webhooks');
+      }
     } finally {
       setLoading(false);
     }
@@ -105,6 +138,8 @@ const AVAILABLE_EVENTS = [
     setSelectedEvents([]);
     setEnabled(true);
     setEditingWebhook(null);
+    setError(null);
+    setSuccess(null);
   };
 
   const handleCreate = async () => {
@@ -121,8 +156,8 @@ const AVAILABLE_EVENTS = [
       };
 
       const endpoint = editingWebhook
-        ? `/api/v1/webhooks/${editingWebhook.id}`
-        : '/api/v1/webhooks';
+        ? `/api/webhooks/${editingWebhook.id}`
+        : '/api/webhooks';
       
       const method = editingWebhook ? 'PATCH' : 'POST';
 
@@ -132,9 +167,9 @@ const AVAILABLE_EVENTS = [
         body: JSON.stringify(payload),
       });
 
+      const parsed = await safeJson<{ error?: string; webhook?: WebhookData }>(response);
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Operation failed');
+        throw new Error(parsed?.error || 'Operation failed');
       }
 
       setSuccess(editingWebhook ? 'Webhook updated!' : 'Webhook created!');
@@ -158,7 +193,7 @@ const AVAILABLE_EVENTS = [
     if (!confirm('Are you sure you want to delete this webhook?')) return;
 
     try {
-      const response = await fetch(`/api/v1/webhooks/${webhookId}`, {
+      const response = await fetch(`/api/webhooks/${webhookId}`, {
         method: 'DELETE',
       });
 
@@ -176,16 +211,16 @@ const AVAILABLE_EVENTS = [
     setError(null);
 
     try {
-      const response = await fetch(`/api/v1/webhooks/${webhookId}/test`, {
+      const response = await fetch(`/api/webhooks/${webhookId}/test`, {
         method: 'POST',
       });
 
+      const parsed = await safeJson<{ error?: string; success?: boolean; message?: string }>(response);
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Test failed');
+        throw new Error(parsed?.error || 'Test failed');
       }
 
-      setSuccess('Test webhook fired! Check your endpoint.');
+      setSuccess(parsed?.message || 'Test webhook fired! Check your endpoint.');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Test failed');
     } finally {
@@ -195,11 +230,11 @@ const AVAILABLE_EVENTS = [
 
   const fetchDeliveries = async (webhookId: string) => {
     try {
-      const response = await fetch(`/api/v1/webhooks/${webhookId}/deliveries`);
+      const response = await fetch(`/api/webhooks/${webhookId}/deliveries`);
       if (!response.ok) throw new Error('Failed to fetch deliveries');
       
-      const data = await response.json();
-      setDeliveries(prev => ({ ...prev, [webhookId]: data.deliveries || [] }));
+      const parsed = await safeJson<{ deliveries?: WebhookDelivery[] }>(response);
+      setDeliveries(prev => ({ ...prev, [webhookId]: Array.isArray(parsed?.deliveries) ? parsed!.deliveries! : [] }));
       setViewingDeliveries(webhookId);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to load deliveries');

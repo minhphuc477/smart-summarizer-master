@@ -82,7 +82,7 @@ describe('CanvasEditor', () => {
     render(<CanvasEditor workspaceId="w1" onSave={onSave} />);
 
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^save canvas$/i }));
     });
 
     // Wait for both POST and PATCH calls to complete

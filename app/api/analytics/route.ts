@@ -29,12 +29,86 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // Get summary using new function
-    const { data: summary } = await supabase
-      .rpc('get_user_analytics_summary')
-      .single();
+    // Get summary - calculate directly from notes since RPC may have mismatched schema
+    const { data: notesForSummary, error: summaryError } = await supabase
+      .from('notes')
+      .select('id, summary, original_notes, created_at')
+      .eq('user_id', user.id);
 
-    // Get recent events
+    const summary = {
+      total_notes: 0,
+      total_summaries: 0,
+      total_canvases: 0,
+      total_templates_used: 0,
+      total_words: 0,
+      total_active_minutes: 0,
+      active_days: 0,
+      last_active_date: new Date(0).toISOString(),
+    };
+
+    if (!summaryError && notesForSummary) {
+      summary.total_notes = notesForSummary.length;
+      summary.total_summaries = notesForSummary.filter(n => n.summary).length;
+      
+      // Calculate total words from original_notes
+      summary.total_words = notesForSummary.reduce((acc, note) => {
+        const text = note.original_notes || note.summary || '';
+        return acc + text.trim().split(/\s+/).filter((w: string) => w.length > 0).length;
+      }, 0);
+
+      // Get unique dates for active_days
+      const uniqueDates = new Set(notesForSummary.map(n => n.created_at.split('T')[0]));
+      summary.active_days = uniqueDates.size;
+
+      // Get last active date
+      if (notesForSummary.length > 0) {
+        const sortedNotes = [...notesForSummary].sort((a, b) => 
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+        summary.last_active_date = sortedNotes[0].created_at;
+      }
+    }
+
+    // Calculate active minutes from usage_events if available, otherwise estimate
+    const { data: usageEvents } = await supabase
+      .from('usage_events')
+      .select('created_at, event_type')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true });
+
+    if (usageEvents && usageEvents.length > 0) {
+      // Calculate session-based active time
+      let totalMinutes = 0;
+      let sessionStart = new Date(usageEvents[0].created_at);
+      
+      for (let i = 1; i < usageEvents.length; i++) {
+        const current = new Date(usageEvents[i].created_at);
+        const diff = (current.getTime() - sessionStart.getTime()) / 1000 / 60; // minutes
+        
+        // If events are within 30 minutes, count as same session
+        if (diff <= 30) {
+          totalMinutes += diff;
+        }
+        sessionStart = current;
+      }
+      
+      summary.total_active_minutes = Math.round(totalMinutes);
+    } else {
+      // Fallback: Estimate based on note count (2 minutes per note)
+      summary.total_active_minutes = (summary.total_notes || 0) * 2;
+    }
+
+    // Get canvas count
+    const { data: canvases } = await supabase
+      .from('canvases')
+      .select('id')
+      .eq('user_id', user.id);
+    
+    if (canvases) {
+      summary.total_canvases = canvases.length;
+    }
+
+    // Get recent events for display
     const { data: recentEvents } = await supabase
       .from('usage_events')
       .select('*')

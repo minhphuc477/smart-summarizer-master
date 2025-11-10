@@ -4,7 +4,7 @@ const url = process.env.BASE_URL || 'http://localhost:3000';
 const timeout = 60000;
 const interval = 1500;
 
-function check() {
+export function check() {
   return new Promise(resolve => {
     const req = http.get(url, res => {
       resolve({ ok: true, status: res.statusCode });
@@ -13,17 +13,22 @@ function check() {
   });
 }
 
-(async () => {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    const r = await check();
-    if (r.ok) {
-      console.log('OK', r.status);
-      process.exit(0);
+// Run the wait loop when executed normally. When running under Jest the
+// environment sets JEST_WORKER_ID which prevents the main loop from running
+// during tests (so importing this module is safe).
+if (!process.env.JEST_WORKER_ID) {
+  (async () => {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      const r = await check();
+      if (r.ok) {
+        console.log('OK', r.status);
+        process.exit(0);
+      }
+      process.stdout.write('.');
+      await new Promise(r => setTimeout(r, interval));
     }
-    process.stdout.write('.');
-    await new Promise(r => setTimeout(r, interval));
-  }
-  console.error('\nTimed out waiting for', url);
-  process.exit(2);
-})();
+    console.error('\nTimed out waiting for', url);
+    process.exit(2);
+  })();
+}

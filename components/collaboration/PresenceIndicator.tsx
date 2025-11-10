@@ -76,8 +76,8 @@ export function PresenceIndicator({ presence, showCursors = false }: PresenceInd
     <div className="flex items-center gap-2">
       <TooltipProvider>
         <div className="flex -space-x-2">
-          {sortedPresence.map((user) => (
-            <Tooltip key={user.user_id}>
+          {sortedPresence.map((user, idx) => (
+            <Tooltip key={user.user_id ?? user.user_email ?? `p-${idx}`}>
               <TooltipTrigger>
                 <div
                   className="relative"
@@ -116,11 +116,11 @@ export function PresenceIndicator({ presence, showCursors = false }: PresenceInd
       </div>
 
       {showCursors &&
-        presence.map((user) =>
+        presence.map((user, idx) =>
           user.cursor_position ? (
             <div
-              key={user.user_id}
-              data-cursor-user={user.user_id}
+              key={user.user_id ?? user.user_email ?? `c-${idx}`}
+              data-cursor-user={user.user_id ?? user.user_email}
               className="absolute pointer-events-none z-50"
               style={{
                 left: user.cursor_position.x,

@@ -2,10 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSupabase } from '@/lib/supabaseServer';
 import { createRequestLogger } from '@/lib/logger';
 
-export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
+// Next.js 15 type expectation for dynamic segment handlers requires the second arg's params to be a Promise
+// in generated .next types (ParamCheck<RouteContext>). Align with other route files in the project.
+type IdParams = Promise<{ id: string }>;
+
+export async function GET(_req: NextRequest, { params }: { params: IdParams }) {
+  const { id } = await params;
   const logger = createRequestLogger(_req);
   const supabase = await getServerSupabase();
-  const idNum = parseInt(params.id, 10);
+  const idNum = parseInt(id, 10);
   if (Number.isNaN(idNum)) return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
   const { data: job } = await supabase
     .from('embedding_jobs')
@@ -21,9 +26,10 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
   });
 }
 
-export async function HEAD(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function HEAD(_req: NextRequest, { params }: { params: IdParams }) {
+  const { id } = await params;
   const supabase = await getServerSupabase();
-  const idNum = parseInt(params.id, 10);
+  const idNum = parseInt(id, 10);
   if (Number.isNaN(idNum)) return new NextResponse(null, { status: 400 });
   const { data: job } = await supabase
     .from('embedding_jobs')

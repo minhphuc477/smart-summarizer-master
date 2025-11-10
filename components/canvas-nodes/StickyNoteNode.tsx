@@ -10,7 +10,7 @@ type StickyNoteData = {
 
 export default function StickyNoteNode({ data, id: _id }: NodeProps<StickyNoteData>) {
   const [text, setText] = useState(data.text || '');
-  const [isEditing, setIsEditing] = useState(data.editing !== undefined ? data.editing : true); // Start in editing mode by default for new notes
+  const [isEditing, setIsEditing] = useState(false); // Start NOT editing by default - user must click
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -26,6 +26,16 @@ export default function StickyNoteNode({ data, id: _id }: NodeProps<StickyNoteDa
     if (data.text !== text) {
       data.text = text;
     }
+  };
+
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsEditing(true);
+  };
+
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsEditing(true);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -72,7 +82,8 @@ export default function StickyNoteNode({ data, id: _id }: NodeProps<StickyNoteDa
         />
       ) : (
         <div
-          onClick={() => setIsEditing(true)}
+          onClick={handleClick}
+          onDoubleClick={handleDoubleClick}
           className="w-full h-full p-2 text-sm cursor-text whitespace-pre-wrap break-words"
           style={{
             fontFamily: 'Comic Sans MS, cursive',

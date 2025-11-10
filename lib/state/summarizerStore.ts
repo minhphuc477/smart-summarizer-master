@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type { Session } from '@supabase/supabase-js';
 import { canGuestUse, incrementGuestUsage, addGuestNote, getRemainingUsage, ActionItem } from '@/lib/guestMode';
 
@@ -42,7 +43,9 @@ interface SummarizerState {
   setUrlContentSource: (src: 'webpage' | 'youtube-transcript' | 'youtube-metadata' | null) => void;
 }
 
-export const useSummarizerStore = create<SummarizerState>((set, get) => ({
+export const useSummarizerStore = create<SummarizerState>()(
+  persist(
+    (set, get) => ({
   notes: '',
   customPersona: '',
   isLoading: false,
@@ -61,7 +64,7 @@ export const useSummarizerStore = create<SummarizerState>((set, get) => ({
 
   setSession: (s) => set({ session: s }),
   setGuestMode: (g) => set({ isGuestMode: g, remainingUses: g ? getRemainingUsage() : 0 }),
-  setNotes: (v) => set({ notes: v }),
+  setNotes: (v) => set({ notes: typeof v === 'string' ? v : '' }),
   setCustomPersona: (v) => set({ customPersona: v }),
   setInputMode: (m) => set({ inputMode: m }),
   setUrlInput: (v) => {
@@ -82,8 +85,28 @@ export const useSummarizerStore = create<SummarizerState>((set, get) => ({
     }
     set({ urlInput: v, urlError, isValidUrl });
   },
-  setSelectedFolderId: (id) => set({ selectedFolderId: id }),
-  setSelectedWorkspaceId: (id) => set({ selectedWorkspaceId: id }),
+  setSelectedFolderId: (id) => {
+    set({ selectedFolderId: id });
+    // Persist to localStorage
+    if (typeof window !== 'undefined') {
+      if (id === null) {
+        localStorage.removeItem('selectedFolderId');
+      } else {
+        localStorage.setItem('selectedFolderId', String(id));
+      }
+    }
+  },
+  setSelectedWorkspaceId: (id) => {
+    set({ selectedWorkspaceId: id });
+    // Persist to localStorage
+    if (typeof window !== 'undefined') {
+      if (id === null) {
+        localStorage.removeItem('selectedWorkspaceId');
+      } else {
+        localStorage.setItem('selectedWorkspaceId', id);
+      }
+    }
+  },
   clearResult: () => set({ result: null }),
   setErrorState: (msg) => set({ error: msg }),
   setResultState: (res) => set({ result: res }),
@@ -91,7 +114,13 @@ export const useSummarizerStore = create<SummarizerState>((set, get) => ({
 
   submitNotes: async () => {
     const { notes, customPersona, isGuestMode, session, selectedFolderId, selectedWorkspaceId } = get();
-    if (!notes.trim()) return;
+    
+    // Defensive check: ensure notes is a string
+    if (!notes || typeof notes !== 'string' || !notes.trim()) {
+      console.warn('submitNotes called with invalid notes:', typeof notes, notes);
+      return;
+    }
+    
     if (isGuestMode && !canGuestUse()) {
       set({ error: "You've reached the guest limit. Please sign in to continue!" });
       return;
@@ -199,4 +228,38 @@ export const useSummarizerStore = create<SummarizerState>((set, get) => ({
       set({ isLoading: false });
     }
   },
-}));
+    }),
+    {
+      name: 'summarizer-storage',
+      version: 1, // Increment this if you need to invalidate old storage
+      partialize: (state) => ({
+        selectedWorkspaceId: state.selectedWorkspaceId,
+        selectedFolderId: state.selectedFolderId,
+        customPersona: state.customPersona,
+      }),
+      // Migration function for handling version upgrades
+      migrate: (persistedState: unknown, version: number) => {
+        // If migrating from version 0 to 1, ensure all fields are properly typed
+        if (version === 0) {
+          const state = persistedState as Record<string, unknown>;
+          return {
+            selectedWorkspaceId: typeof state?.selectedWorkspaceId === 'string' ? state.selectedWorkspaceId : null,
+            selectedFolderId: typeof state?.selectedFolderId === 'number' ? state.selectedFolderId : null,
+            customPersona: typeof state?.customPersona === 'string' ? state.customPersona : '',
+          };
+        }
+        return persistedState as Partial<SummarizerState>;
+      },
+      // Ensure loaded state has proper types
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<SummarizerState> & { notes?: unknown };
+        return {
+          ...currentState,
+          ...persisted,
+          // Always ensure notes is a string
+          notes: typeof persisted?.notes === 'string' ? persisted.notes : '',
+        };
+      },
+    }
+  )
+);
