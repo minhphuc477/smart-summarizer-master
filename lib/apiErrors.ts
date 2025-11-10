@@ -5,7 +5,8 @@ export type ApiErrorCode =
   | 'INVALID_INPUT'
   | 'AUTH_REQUIRED'
   | 'NOT_FOUND'
-  | 'INTERNAL';
+  | 'INTERNAL'
+  | 'EMBEDDINGS_UNAVAILABLE';
 
 export function apiError(code: ApiErrorCode, message: string, details?: unknown) {
   return { error: message, code, details };
@@ -23,4 +24,5 @@ export const ApiErrorMessages: Record<ApiErrorCode, string> = {
   AUTH_REQUIRED: 'Authentication is required for this request.',
   NOT_FOUND: 'The requested resource was not found.',
   INTERNAL: 'An unexpected error occurred. Please try again.',
+  EMBEDDINGS_UNAVAILABLE: 'Embeddings are temporarily unavailable. Try keyword-only search.',
 };

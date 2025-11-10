@@ -61,6 +61,25 @@ function CodeNode({ data, selected }: NodeProps<CodeNodeData>) {
   const [editing, setEditing] = useState(!data.code);
   const codeRef = useRef<HTMLElement>(null);
 
+  // Sync with prop changes when template is loaded
+  useEffect(() => {
+    if (data.code !== undefined && data.code !== code && !editing) {
+      setCode(data.code);
+    }
+  }, [data.code, code, editing]);
+
+  useEffect(() => {
+    if (data.language !== undefined && data.language !== language) {
+      setLanguage(data.language);
+    }
+  }, [data.language, language]);
+
+  useEffect(() => {
+    if (data.title !== undefined && data.title !== title) {
+      setTitle(data.title);
+    }
+  }, [data.title, title]);
+
   const prismLanguage = useMemo(() => {
     // Map UI language to Prism identifier
     const map: Record<string, string> = {

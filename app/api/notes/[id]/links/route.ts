@@ -28,10 +28,15 @@ export async function GET(
       .from('notes')
       .select('id, user_id')
       .eq('id', noteId)
-      .single();
+      .maybeSingle(); // Use maybeSingle() instead of single() to avoid PGRST116 error when note doesn't exist
 
-    if (noteErr || !note) {
-      logger.warn('Note not found for links', undefined, { supabaseError: noteErr || null });
+    if (noteErr) {
+      logger.error('Error fetching note', noteErr as unknown as Error, { noteId });
+      return NextResponse.json({ error: 'Failed to fetch note' }, { status: 500 });
+    }
+
+    if (!note) {
+      logger.warn('Note not found for links', undefined, { noteId });
       return NextResponse.json({ error: 'Note not found' }, { status: 404 });
     }
 
@@ -157,10 +162,15 @@ export async function POST(
       .from('notes')
       .select('id, user_id, embedding')
       .eq('id', noteId)
-      .single();
+      .maybeSingle(); // Use maybeSingle() instead of single() to avoid PGRST116 error when note doesn't exist
 
-    if (sourceErr || !sourceNote) {
-      logger.warn('Source note not found', undefined, { supabaseError: sourceErr || null });
+    if (sourceErr) {
+      logger.error('Error fetching source note', sourceErr as unknown as Error, { noteId });
+      return NextResponse.json({ error: 'Failed to fetch note' }, { status: 500 });
+    }
+
+    if (!sourceNote) {
+      logger.warn('Source note not found', undefined, { noteId });
       return NextResponse.json({ error: 'Note not found' }, { status: 404 });
     }
 
@@ -204,10 +214,15 @@ export async function POST(
       .from('notes')
       .select('id, user_id')
       .eq('id', target_note_id)
-      .single();
+      .maybeSingle(); // Use maybeSingle() to avoid PGRST116 error
 
-    if (targetErr || !targetNote) {
-      logger.warn('Target note not found', undefined, { supabaseError: targetErr || null });
+    if (targetErr) {
+      logger.error('Error fetching target note', targetErr as unknown as Error, { targetNoteId: target_note_id });
+      return NextResponse.json({ error: 'Failed to fetch target note' }, { status: 500 });
+    }
+
+    if (!targetNote) {
+      logger.warn('Target note not found', undefined, { targetNoteId: target_note_id });
       return NextResponse.json({ error: 'Target note not found' }, { status: 404 });
     }
 

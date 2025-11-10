@@ -9,13 +9,17 @@
 
 export interface ResumableUploadOptions {
   file: File;
-  chunkSize?: number; // default 5MB
+  chunkSize?: number; // default 10MB (increased from 5MB for better performance)
   onProgress?: (uploadedBytes: number, totalBytes: number) => void;
   onEta?: (etaSeconds: number) => void;
   onComplete?: (storagePath: string) => void;
   onError?: (err: Error) => void;
   supabaseUrl: string;
-  supabaseAnonKey: string;
+  // Either provide the anon/service key or the user's access token. Prefer access token for RLS-authorized uploads.
+  supabaseAnonKey?: string;
+  supabaseAccessToken?: string;
+  // If provided, use this upload URL instead of creating a new resumable resource
+  initialUploadUrl?: string;
   bucket: string;
   userId: string; // used for path prefix
 }
@@ -30,7 +34,8 @@ export class ResumableUpload {
   private startTime = 0;
 
   constructor(opts: ResumableUploadOptions) {
-    this.opts = { ...opts, chunkSize: opts.chunkSize || 5 * 1024 * 1024 };
+    // Default chunk size: 10MB for better upload performance (reduced round trips)
+    this.opts = { ...opts, chunkSize: opts.chunkSize || 10 * 1024 * 1024 };
   }
 
   private fingerprint(): string {
@@ -64,24 +69,43 @@ export class ResumableUpload {
         const headResp = await fetch(this.uploadUrl, { method: 'HEAD' });
         if (headResp.ok) {
           const offset = parseInt(headResp.headers.get('Upload-Offset') || '0', 10);
-            this.uploadedBytes = offset;
+          this.uploadedBytes = offset;
         }
       }
+
+      // If caller supplied an initial upload URL (server-created), prefer that
+      if (!this.uploadUrl && this.opts.initialUploadUrl) {
+        this.uploadUrl = this.opts.initialUploadUrl;
+        if (typeof localStorage !== 'undefined') localStorage.setItem(`tus-url:${fp}`, this.uploadUrl);
+        const headResp = await fetch(this.uploadUrl, { method: 'HEAD' });
+        if (headResp.ok) {
+          const offset = parseInt(headResp.headers.get('Upload-Offset') || '0', 10);
+          this.uploadedBytes = offset;
+        }
+      }
+
       if (!this.uploadUrl) {
         // Build proper TUS endpoint for Supabase Storage
         const tusEndpoint = `${this.opts.supabaseUrl}/storage/v1/upload/resumable`;
         const path = `${this.opts.bucket}/${this.opts.userId}/${Date.now()}-${this.opts.file.name}`;
         
         try {
+          const authHeader = this.opts.supabaseAccessToken
+            ? `Bearer ${this.opts.supabaseAccessToken}`
+            : (this.opts.supabaseAnonKey ? `Bearer ${this.opts.supabaseAnonKey}` : undefined);
+
+          const headers: Record<string, string> = {
+            'Upload-Length': String(this.opts.file.size),
+            'Tus-Resumable': '1.0.0',
+            'Upload-Metadata': `bucketName ${btoa(this.opts.bucket)},objectName ${btoa(path)},contentType ${btoa(this.opts.file.type || 'application/pdf')},cacheControl ${btoa('3600')}`,
+            'x-upsert': 'false'
+          };
+
+          if (authHeader) headers['Authorization'] = authHeader;
+
           const createResp = await fetch(tusEndpoint, {
             method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${this.opts.supabaseAnonKey}`,
-              'Upload-Length': String(this.opts.file.size),
-              'Tus-Resumable': '1.0.0',
-              'Upload-Metadata': `bucketName ${btoa(this.opts.bucket)},objectName ${btoa(path)},contentType ${btoa(this.opts.file.type || 'application/pdf')},cacheControl ${btoa('3600')}`,
-              'x-upsert': 'false'
-            }
+            headers
           });
           
           if (!createResp.ok) {
@@ -112,9 +136,22 @@ export class ResumableUpload {
 
   private async sendChunks() {
     const file = this.opts.file;
+    const chunkSize = this.opts.chunkSize || 10 * 1024 * 1024;
+    let chunkIndex = 0;
+    const totalChunks = Math.ceil((file.size - this.uploadedBytes) / chunkSize);
+    
+    console.log(`[ResumableUpload] Starting upload: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+    console.log(`[ResumableUpload] Chunk size: ${(chunkSize / 1024 / 1024).toFixed(2)} MB, Total chunks: ${totalChunks}`);
+    
     while (!this.aborted && !this.paused && this.uploadedBytes < file.size) {
-      const nextChunkEnd = Math.min(this.uploadedBytes + (this.opts.chunkSize || 0), file.size);
+      const chunkStartTime = Date.now();
+      const nextChunkEnd = Math.min(this.uploadedBytes + chunkSize, file.size);
       const chunk = file.slice(this.uploadedBytes, nextChunkEnd);
+      const currentChunkSize = nextChunkEnd - this.uploadedBytes;
+      
+      chunkIndex++;
+      console.log(`[ResumableUpload] Uploading chunk ${chunkIndex}/${totalChunks} (${(currentChunkSize / 1024).toFixed(2)} KB)`);
+      
       this.controller = new AbortController();
       const patchResp = await fetch(this.uploadUrl!, {
         method: 'PATCH',
@@ -126,16 +163,37 @@ export class ResumableUpload {
         body: chunk,
         signal: this.controller.signal,
       });
-      if (!patchResp.ok) throw new Error(`Chunk upload failed (${patchResp.status})`);
+      
+      const chunkDuration = Date.now() - chunkStartTime;
+      const chunkSpeed = (currentChunkSize / 1024 / 1024) / (chunkDuration / 1000); // MB/s
+      console.log(`[ResumableUpload] Chunk ${chunkIndex} completed in ${(chunkDuration / 1000).toFixed(2)}s (${chunkSpeed.toFixed(2)} MB/s)`);
+      
+      if (!patchResp.ok) {
+        console.error(`[ResumableUpload] Chunk upload failed:`, {
+          status: patchResp.status,
+          statusText: patchResp.statusText,
+          chunkIndex,
+          uploadedBytes: this.uploadedBytes
+        });
+        throw new Error(`Chunk upload failed (${patchResp.status})`);
+      }
+      
       const newOffset = parseInt(patchResp.headers.get('Upload-Offset') || '0', 10);
       this.uploadedBytes = newOffset;
       if (this.opts.onProgress) this.opts.onProgress(this.uploadedBytes, file.size);
       const elapsed = (Date.now() - this.startTime) / 1000;
       const speed = this.uploadedBytes / (elapsed || 1);
       const remaining = file.size - this.uploadedBytes;
-      if (this.opts.onEta) this.opts.onEta(remaining / (speed || 1));
+      const eta = remaining / (speed || 1);
+      if (this.opts.onEta) this.opts.onEta(eta);
+      
+      console.log(`[ResumableUpload] Progress: ${((this.uploadedBytes / file.size) * 100).toFixed(1)}%, ETA: ${eta.toFixed(1)}s`);
     }
     if (!this.aborted && this.uploadedBytes >= file.size) {
+      const totalDuration = (Date.now() - this.startTime) / 1000;
+      const avgSpeed = (file.size / 1024 / 1024) / totalDuration;
+      console.log(`[ResumableUpload] Upload completed: ${file.name} in ${totalDuration.toFixed(2)}s (avg ${avgSpeed.toFixed(2)} MB/s)`);
+      
       const storagePath = `${this.opts.userId}/${Date.now()}-${this.opts.file.name}`;
       if (this.opts.onComplete) this.opts.onComplete(storagePath);
       if (typeof localStorage !== 'undefined') localStorage.removeItem(`tus-url:${this.fingerprint()}`);

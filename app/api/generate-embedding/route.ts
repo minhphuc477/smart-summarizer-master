@@ -62,10 +62,12 @@ export async function POST(req: Request) {
     }
 
     // Try write and attempt automatic padding on dimension mismatch
+    // Convert array to vector format: '[0.1, 0.2, ...]' as a string for pgvector
     const tryUpsert = async (vec: number[]) => {
+      const vectorString = `[${vec.join(',')}]`;
       const { error: upsertErr } = await supabase
         .from('notes')
-        .update({ embedding: vec })
+        .update({ embedding: vectorString })
         .eq('id', noteId);
       return upsertErr;
     };
@@ -99,12 +101,16 @@ export async function POST(req: Request) {
 
     // Fire-and-forget auto-linking
     try {
+      // Forward the incoming Cookie header so the internal request runs with the same user context
+      const cookieHeader = req.headers.get('cookie') || '';
       fetch(`${req.url.replace('/api/generate-embedding', `/api/notes/${noteId}/links`)}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(cookieHeader ? { Cookie: cookieHeader } : {}) },
         body: JSON.stringify({ auto_discover: true, min_similarity: 0.78 })
       }).catch(() => {});
-    } catch {}
+    } catch {
+      // noop - auto-linking should not block embeddings
+    }
 
     logger.logResponse('POST', '/api/generate-embedding', 200, Date.now() - start, { noteId });
     return NextResponse.json({ success: true });

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -66,6 +67,7 @@ interface PDFManagerProps {
 }
 
 export default function PDFManager({ session, selectedFolderId, selectedWorkspaceId }: PDFManagerProps) {
+  const router = useRouter();
   const [pdfs, setPdfs] = useState<PDFDocument[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -187,10 +189,42 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
       if (selectedFile.size > 8 * 1024 * 1024) {
         try {
           setResumable(true);
+          // Ask the server to create the resumable upload resource and return the upload URL.
+          let initialUploadUrl: string | undefined = undefined;
+          try {
+            // Prefer service-role creation if available (server will only allow when SUPABASE_SERVICE_ROLE_KEY is configured)
+            let createResp = await fetch('/api/pdf/create-resumable-service', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filename: selectedFile.name, size: selectedFile.size, bucket: 'pdf-documents' })
+            });
+            if (!createResp.ok) {
+              // Fallback to non-service creation path
+              createResp = await fetch('/api/pdf/create-resumable', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: selectedFile.name, size: selectedFile.size, bucket: 'pdf-documents' })
+              });
+            }
+            if (createResp.ok) {
+              const body = await createResp.json().catch(() => ({}));
+              initialUploadUrl = body?.uploadUrl;
+            } else {
+              const text = await createResp.text().catch(() => '');
+              console.warn('Server create-resumable failed:', createResp.status, text);
+            }
+          } catch (e) {
+            console.warn('Failed to call server create-resumable:', e);
+          }
+
           const ru = createResumableUpload({
             file: selectedFile,
             supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
             supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+            // Prefer using the user's access token when available so RLS/storage policies see the authenticated user
+            supabaseAccessToken: session?.access_token,
+            // If the server returned an upload URL, use it so the browser only PATCHes the created resource
+            initialUploadUrl,
             bucket: 'pdf-documents',
             userId: session.user.id,
             onProgress: (uploaded, total) => {
@@ -464,7 +498,11 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
       }
 
       const data = await response.json();
-      
+
+      // The server returns `note_id` (and not a full `note` object) for PDF summarization.
+      // Read both `note_id` and legacy `note?.id` to be robust.
+      const returnedNoteId = data.note_id ?? data.note?.id;
+
       // Store the complete summary data
       const summaryData: PDFSummary = {
         summary: data.summary || data.note?.summary || '',
@@ -473,7 +511,7 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
         sentiment: data.sentiment || data.note?.sentiment || 'neutral',
         tags: data.tags || data.note?.tags || [],
         page_references: data.page_references || 0,
-        note_id: data.note?.id,
+        note_id: typeof returnedNoteId === 'number' ? returnedNoteId : (returnedNoteId ? Number(returnedNoteId) : undefined),
       };
       
       setSuccess('PDF summarized successfully!');
@@ -493,6 +531,21 @@ export default function PDFManager({ session, selectedFolderId, selectedWorkspac
         summary: summaryData.summary,
         summaryData: summaryData 
       });
+
+      // If the server returned a created note id, navigate to the note view so
+      // subsequent actions (links, tags, etc.) use the correct note id.
+      if (summaryData.note_id) {
+        // Small delay to let user see the success message before navigation
+        setTimeout(() => {
+          try {
+            console.log(`[PDFManager] Navigating to note ${summaryData.note_id}`);
+            router.push(`/notes/${summaryData.note_id}`);
+          } catch (e) {
+            // If navigation fails, ignore silently; the UI still shows the summary.
+            console.warn('Navigation to created note failed', e);
+          }
+        }, 1500); // 1.5s delay to show success message
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Summarization failed');
     } finally {

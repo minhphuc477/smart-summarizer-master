@@ -15,20 +15,36 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Lightbulb, Plus, X } from 'lucide-react';
 
 interface AISuggestion {
-  relatedConcepts: string[];
-  connections: Array<{
+  relatedConcepts: Array<{
+    title: string;
+    description: string;
+    suggestedPosition: string;
+  }>;
+  suggestedConnections?: Array<{
+    from: string;
+    to: string;
+    reason: string;
+    label?: string;
+  }>;
+  groupings?: Array<{
+    name: string;
+    nodes: string[];
+    reason: string;
+  }>;
+  // Legacy support for older API responses
+  connections?: Array<{
     from: string;
     to: string;
     reason: string;
   }>;
-  nextSteps: string[];
+  nextSteps?: string[];
 }
 
 interface SuggestionsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   suggestions: AISuggestion | null;
-  onAddConcept: (concept: string) => void;
+  onAddConcept: (concept: { title: string; description: string; suggestedPosition: string }) => void;
   onAddConnection: (connection: { from: string; to: string; reason: string }) => void;
 }
 
@@ -46,9 +62,9 @@ export default function SuggestionsDialog({
     return null;
   }
 
-  const handleAddConcept = (concept: string) => {
+  const handleAddConcept = (concept: { title: string; description: string; suggestedPosition: string }) => {
     onAddConcept(concept);
-    setAddedConcepts(prev => new Set(prev).add(concept));
+    setAddedConcepts(prev => new Set(prev).add(concept.title));
   };
 
   const handleAddConnection = (connection: { from: string; to: string; reason: string }) => {
@@ -57,7 +73,7 @@ export default function SuggestionsDialog({
     setAddedConnections(prev => new Set(prev).add(key));
   };
 
-  const isConceptAdded = (concept: string) => addedConcepts.has(concept);
+  const isConceptAdded = (conceptTitle: string) => addedConcepts.has(conceptTitle);
   const isConnectionAdded = (connection: { from: string; to: string }) => {
     return addedConnections.has(`${connection.from}-${connection.to}`);
   };
@@ -88,27 +104,38 @@ export default function SuggestionsDialog({
                   {suggestions.relatedConcepts.map((concept, idx) => (
                     <div
                       key={idx}
-                      className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
+                      className="flex flex-col gap-2 p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
                     >
-                      <span className="text-sm font-medium">{concept}</span>
-                      <Button
-                        size="sm"
-                        variant={isConceptAdded(concept) ? 'outline' : 'default'}
-                        onClick={() => handleAddConcept(concept)}
-                        disabled={isConceptAdded(concept)}
-                      >
-                        {isConceptAdded(concept) ? (
-                          <>
-                            <X className="h-3 w-3 mr-1" />
-                            Added
-                          </>
-                        ) : (
-                          <>
-                            <Plus className="h-3 w-3 mr-1" />
-                            Add to Canvas
-                          </>
-                        )}
-                      </Button>
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <span className="text-sm font-medium block">{concept.title}</span>
+                          <span className="text-xs text-muted-foreground italic block mt-1">{concept.description}</span>
+                          {concept.suggestedPosition && (
+                            <span className="text-xs text-muted-foreground block mt-1">
+                              💡 Suggested near: {concept.suggestedPosition}
+                            </span>
+                          )}
+                        </div>
+                        <Button
+                          size="sm"
+                          variant={isConceptAdded(concept.title) ? 'outline' : 'default'}
+                          onClick={() => handleAddConcept(concept)}
+                          disabled={isConceptAdded(concept.title)}
+                          className="ml-2"
+                        >
+                          {isConceptAdded(concept.title) ? (
+                            <>
+                              <X className="h-3 w-3 mr-1" />
+                              Added
+                            </>
+                          ) : (
+                            <>
+                              <Plus className="h-3 w-3 mr-1" />
+                              Add to Canvas
+                            </>
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -116,14 +143,17 @@ export default function SuggestionsDialog({
             )}
 
             {/* Suggested Connections */}
-            {suggestions.connections && suggestions.connections.length > 0 && (
+            {((suggestions.suggestedConnections && suggestions.suggestedConnections.length > 0) || 
+              (suggestions.connections && suggestions.connections.length > 0)) && (
               <div>
                 <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
                   Suggested Connections
-                  <Badge variant="secondary">{suggestions.connections.length}</Badge>
+                  <Badge variant="secondary">
+                    {(suggestions.suggestedConnections || suggestions.connections || []).length}
+                  </Badge>
                 </h3>
                 <div className="grid gap-3">
-                  {suggestions.connections.map((connection, idx) => (
+                  {(suggestions.suggestedConnections || suggestions.connections || []).map((connection, idx) => (
                     <div
                       key={idx}
                       className="p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors"

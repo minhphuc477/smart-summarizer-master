@@ -10,8 +10,16 @@ type StickyNoteData = {
 
 export default function StickyNoteNode({ data, id: _id }: NodeProps<StickyNoteData>) {
   const [text, setText] = useState(data.text || '');
-  const [isEditing, setIsEditing] = useState(false); // Start NOT editing by default - user must click
+  // Start editing if the node's data requests it (used when converting from default node)
+  const [isEditing, setIsEditing] = useState<boolean>(() => Boolean(data.editing));
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Sync text when data.text changes (e.g., when loading a template)
+  useEffect(() => {
+    if (data.text !== undefined && data.text !== text && !isEditing) {
+      setText(data.text);
+    }
+  }, [data.text, text, isEditing]);
 
   useEffect(() => {
     if (isEditing && textareaRef.current) {
@@ -20,12 +28,19 @@ export default function StickyNoteNode({ data, id: _id }: NodeProps<StickyNoteDa
     }
   }, [isEditing]);
 
+  // If parent sets data.editing to true (e.g., conversion), enter edit mode
+  useEffect(() => {
+    if (data.editing) setIsEditing(true);
+  }, [data.editing]);
+
   const handleBlur = () => {
     setIsEditing(false);
     // Update the node data
     if (data.text !== text) {
       data.text = text;
     }
+    // Ensure editing flag is cleared in node data
+    if (data.editing) data.editing = false;
   };
 
   const handleClick = (e: React.MouseEvent) => {

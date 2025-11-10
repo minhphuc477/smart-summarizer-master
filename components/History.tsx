@@ -477,24 +477,39 @@ function History({ isGuest = false, selectedFolderId = null, selectedWorkspaceId
           toast.error('Failed to delete note');
         }
       } else {
-        // Optimistic update for logged-in user
+        // Use server-side delete API for proper auth/RLS
         const originalNotes = notes;
         setNotes(notes.filter(n => n.id !== id));
-        toast.success('Note deleted');
         
         try {
-          const { error } = await supabase
-            .from('notes')
-            .delete()
-            .eq('id', id);
+          const res = await fetch('/api/notes/bulk-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: [id] }),
+          });
           
-          if (error) {
-            // Revert on error
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            console.error('[Single Delete] Failed (server):', res.status, body);
+            setNotes(originalNotes);
+            toast.error(body?.error || 'Failed to delete note');
+            return;
+          }
+
+          const payload = await res.json().catch(() => ({}));
+          // Accept success if server returns success:true, even if deletedCount is 0 or missing
+          if (payload?.success) {
+            toast.success('Note deleted');
+          } else if (!payload || payload.deletedCount === 0) {
+            console.error('[Single Delete] Zero rows deleted', payload);
             setNotes(originalNotes);
             toast.error('Failed to delete note');
+            return;
+          } else {
+            toast.success('Note deleted');
           }
-        } catch (_e) {
-          // Revert on error
+        } catch (e) {
+          console.error('[Single Delete] Error:', e);
           setNotes(originalNotes);
           toast.error('Failed to delete note');
         }
@@ -957,51 +972,44 @@ function History({ isGuest = false, selectedFolderId = null, selectedWorkspaceId
     // Optimistic: remove notes locally first for instant feedback
     const ids = Array.from(selectedNoteIds);
     const originalNotes = notes;
-    let undoTimeout: NodeJS.Timeout | null = null;
-    let hasCommitted = false;
 
     setNotes(prev => prev.filter(n => !selectedNoteIds.has(n.id)));
     setSelectedNoteIds(new Set());
     setBulkActionMode(false);
 
-    // Show toast with undo action
-    toast.success(`${ids.length} note(s) deleted`, {
-      action: {
-        label: 'Undo',
-        onClick: () => {
-          if (!hasCommitted) {
-            // Cancel the delete and restore
-            if (undoTimeout) clearTimeout(undoTimeout);
-            setNotes(originalNotes);
-            toast.info('Delete cancelled');
-          } else {
-            toast.error('Cannot undo - delete already committed');
-          }
-        },
-      },
-      duration: 5000,
-    });
+    // Delete immediately via server API (no undo delay to avoid reload issues)
+    try {
+      const res = await fetch('/api/notes/bulk-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
 
-    // Delay actual delete to allow undo
-    undoTimeout = setTimeout(async () => {
-      hasCommitted = true;
-      try {
-        const { error } = await supabase
-          .from('notes')
-          .delete()
-          .in('id', ids);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        console.error('[Bulk Delete] Failed (server):', res.status, body);
+        setNotes(originalNotes);
+        toast.error(body?.error || 'Failed to delete notes');
+        return;
+      }
 
-        if (error) {
-          // Revert on error
-          setNotes(originalNotes);
-          toast.error('Failed to delete notes');
-        }
-      } catch (e) {
-        console.error('Bulk delete error:', e);
+      const payload = await res.json().catch(() => ({}));
+      // Accept success if server returns success:true, even if deletedCount is 0 or missing
+      if (payload?.success) {
+        toast.success(`${ids.length} note(s) deleted`);
+      } else if (!payload || payload.deletedCount === 0) {
+        console.error('[Bulk Delete] Zero rows deleted', payload);
         setNotes(originalNotes);
         toast.error('Failed to delete notes');
+        return;
+      } else {
+        toast.success(`${ids.length} note(s) deleted`);
       }
-    }, 5000);
+    } catch (e) {
+      console.error('Bulk delete error:', e);
+      setNotes(originalNotes);
+      toast.error('Failed to delete notes');
+    }
   };
 
   const handleBulkMove = async (targetFolderId: string) => {

@@ -5,6 +5,49 @@ import { getGroqSummary } from '@/lib/groq';
 
 const MAX_CHUNK_SIZE = 8000; // Characters per chunk to stay within model limits
 
+// Helper function to calculate word overlap similarity between two texts
+function calculateWordOverlapSimilarity(text1: string, text2: string): number {
+  // Normalize texts: lowercase, remove punctuation, split into words
+  const normalize = (text: string) => 
+    text.toLowerCase()
+        .replace(/[^\w\s]/g, ' ')
+        .split(/\s+/)
+        .filter(word => word.length > 2); // Filter out very short words
+
+  const words1 = normalize(text1);
+  const words2 = normalize(text2);
+  
+  if (words1.length === 0 || words2.length === 0) return 0;
+  
+  // Create sets for faster lookup
+  const set1 = new Set(words1);
+  const set2 = new Set(words2);
+  
+  // Calculate intersection
+  const intersection = new Set([...set1].filter(word => set2.has(word)));
+  
+  // Calculate Jaccard similarity: |intersection| / |union|
+  const union = new Set([...set1, ...set2]);
+  const similarity = intersection.size / union.size;
+  
+  return similarity;
+}
+
+// Helper function to find best matching pages for a takeaway
+function findMatchingPages(takeaway: string, pages: Array<{ page: number; text: string }>, minSimilarity = 0.1) {
+  const matches = [];
+  
+  for (const page of pages) {
+    const similarity = calculateWordOverlapSimilarity(takeaway, page.text);
+    if (similarity >= minSimilarity) {
+      matches.push({ page, similarity });
+    }
+  }
+  
+  // Sort by similarity (highest first) and return top matches
+  return matches.sort((a, b) => b.similarity - a.similarity).slice(0, 3);
+}
+
 export async function POST(req: NextRequest) {
   const logger = createRequestLogger(req);
   const startTime = Date.now();
@@ -165,29 +208,44 @@ ${textToSummarize}
     const pageReferences = [];
     if (pdfDoc.pages && Array.isArray(pdfDoc.pages) && pdfDoc.pages.length > 0) {
       for (const takeaway of summary.takeaways.slice(0, 5)) {
-        // Find which page(s) might contain this takeaway
-        const matchingPages = pdfDoc.pages.filter((page: { text: string }) =>
-          page.text.toLowerCase().includes(takeaway.toLowerCase().slice(0, 50))
-        );
+        // Find best matching pages using word overlap similarity
+        const matchingPages = findMatchingPages(takeaway, pdfDoc.pages, 0.1); // Minimum 10% word overlap
 
         if (matchingPages.length > 0) {
-          const firstMatch = matchingPages[0];
-          // Extract a snippet around the match
-          const lowerText = firstMatch.text.toLowerCase();
-          const searchPhrase = takeaway.toLowerCase().slice(0, 50);
-          const matchIndex = lowerText.indexOf(searchPhrase);
-
-          let snippet = '';
-          if (matchIndex !== -1) {
-            const start = Math.max(0, matchIndex - 50);
-            const end = Math.min(firstMatch.text.length, matchIndex + 150);
-            snippet = '...' + firstMatch.text.slice(start, end) + '...';
+          const bestMatch = matchingPages[0];
+          const page = bestMatch.page;
+          
+          // Extract a snippet around the most relevant part of the page
+          // Look for the section of the page text that has highest word overlap with the takeaway
+          const takeawayWords = takeaway.toLowerCase().split(/\s+/).filter(word => word.length > 2);
+          let bestSnippetStart = 0;
+          let bestOverlap = 0;
+          
+          // Slide a window through the page text to find the best matching section
+          const words = page.text.toLowerCase().split(/\s+/);
+          const windowSize = Math.min(50, words.length); // Look at windows of ~50 words
+          
+          for (let i = 0; i <= words.length - windowSize; i++) {
+            const windowWords = words.slice(i, i + windowSize);
+            const overlap = windowWords.filter(word => 
+              takeawayWords.some(takeawayWord => word.includes(takeawayWord) || takeawayWord.includes(word))
+            ).length;
+            
+            if (overlap > bestOverlap) {
+              bestOverlap = overlap;
+              bestSnippetStart = i;
+            }
           }
+          
+          // Extract snippet around the best matching section
+          const snippetStart = Math.max(0, bestSnippetStart - 10);
+          const snippetEnd = Math.min(words.length, bestSnippetStart + windowSize + 10);
+          const snippet = '...' + words.slice(snippetStart, snippetEnd).join(' ') + '...';
 
           pageReferences.push({
             note_id: note.id,
             pdf_document_id: pdfId,
-            page_number: firstMatch.page,
+            page_number: page.page,
             snippet,
             quote: takeaway.slice(0, 500),
             position_in_note: pageReferences.length,
@@ -255,22 +313,66 @@ ${textToSummarize}
       `PDF: ${pdfDoc.original_filename}`
     ].join('\n\n').slice(0, 5000);
     
+    // Forward the incoming Cookie header so the embedding trigger runs with the same user context
+    const cookieHeader = (req.headers.get?.('cookie') || '');
+
+    // Fire-and-forget with retries and logging to help diagnose timing/auth issues.
+    const attemptAutoLink = async () => {
+      const maxAttempts = 3;
+      let attempt = 0;
+      let lastError: unknown = null;
+
+      while (attempt < maxAttempts) {
+        attempt += 1;
+        try {
+          const resp = await fetch(embeddingUrl.toString(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(cookieHeader ? { Cookie: cookieHeader } : {}) },
+            body: JSON.stringify({ noteId: note.id, text: embeddingText }),
+          });
+
+          // Try to capture a small portion of the response body for debugging
+          let respText: string | null = null;
+          try {
+            respText = await resp.text();
+          } catch {
+            respText = null;
+          }
+
+          const truncated = typeof respText === 'string' ? (respText.length > 300 ? respText.slice(0, 300) + '...' : respText) : null;
+          console.log(`[PDF Summarize] embedding-trigger attempt=${attempt} status=${resp.status} noteId=${note.id} body=${truncated}`);
+
+          if (resp.ok) {
+            // Success, stop retrying
+            return;
+          }
+
+          lastError = new Error(`Non-OK status ${resp.status}`);
+        } catch (err) {
+          console.error(`[PDF Summarize] embedding-trigger attempt=${attempt} failed for noteId=${note.id}`, err);
+          lastError = err;
+        }
+
+        // Exponential backoff before next attempt
+        const backoffMs = 200 * Math.pow(2, attempt - 1);
+        await new Promise((res) => setTimeout(res, backoffMs));
+      }
+
+      console.error('[PDF Summarize] embedding-trigger final error', lastError, { noteId: note.id });
+    };
+
+    // Kick off the attempts shortly after returning the response (fire-and-forget)
     setTimeout(() => {
-      fetch(embeddingUrl.toString(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          noteId: note.id,
-          text: embeddingText // Pass text directly to avoid DB lookup
-        }),
-      }).catch((error) => {
-        console.error('Failed to trigger embedding generation:', error);
-      });
-    }, 100); // Small delay to ensure note is committed to DB
+      attemptAutoLink().catch((e) => console.error('[PDF Summarize] attemptAutoLink unexpected error', e));
+    }, 250);
 
     logger.logResponse('POST', '/api/pdf/summarize', 200, Date.now() - startTime);
+    // Return the created note object for client convenience while keeping
+    // `note_id` for backward compatibility with older clients.
     return NextResponse.json({
+      success: true,
       note_id: note.id,
+      note,
       pdf_id: pdfId,
       summary: summary.summary,
       takeaways: summary.takeaways,

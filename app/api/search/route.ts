@@ -1,18 +1,30 @@
 import { NextResponse } from 'next/server';
 import { getServerSupabase } from '@/lib/supabaseServer';
-import { pipeline, FeatureExtractionPipeline } from '@xenova/transformers';
+// Import transformers pipeline dynamically inside getEmbedder to avoid module-load
+// failures crashing the Next server at startup (some environments may not have
+// the native/wasm dependencies available during dev/test runs).
+// We'll dynamically import when needed and cache the pipeline instance.
 import { EMBEDDING_MODEL, EMBEDDING_DIMENSION } from '@/lib/embeddingsConfig';
 import { createRequestLogger } from '@/lib/logger';
 import { respondError } from '@/lib/apiErrors';
 
 // Cache the embedding pipeline
-let embedder: FeatureExtractionPipeline | null = null;
+let embedder: unknown = null;
 
 async function getEmbedder() {
-  if (!embedder) {
-  embedder = (await pipeline('feature-extraction', EMBEDDING_MODEL)) as FeatureExtractionPipeline;
+  if (embedder) return embedder;
+  try {
+  // Dynamically import to avoid import-time crashes
+  const mod = await import('@xenova/transformers');
+    if (!mod || typeof mod.pipeline !== 'function') {
+      throw new Error('Transformers pipeline not available');
+    }
+    embedder = await mod.pipeline('feature-extraction', EMBEDDING_MODEL);
+    return embedder;
+  } catch (err) {
+    // Bubble up so callers can return a helpful error instead of crashing the server
+    throw new Error(`Failed to load embedding pipeline: ${(err as Error).message}`);
   }
-  return embedder;
 }
 
 export async function POST(req: Request) {
@@ -62,10 +74,24 @@ export async function POST(req: Request) {
       }
     }
 
-  // 1. Build query embedding (local, cached model)
+    // 1. Build query embedding (local, cached model)
     const embeddingStart = Date.now();
-    const pipe = await getEmbedder();
-    const output = await pipe(query.trim(), {
+    let pipe: unknown = null;
+    try {
+      pipe = await getEmbedder();
+    } catch (embedErr) {
+      // If the embedding pipeline can't be loaded, return a service-unavailable
+      // response so the client can automatically fallback to lexical-only search.
+      logger.error('Embedding pipeline unavailable', embedErr as Error, { userId });
+      const totalDuration = Date.now() - startTime;
+      logger.logResponse('POST', '/api/search', 503, totalDuration, { userId });
+  // Return a specific error code so clients can detect and fallback to lexical-only search.
+  const { body, status } = respondError('EMBEDDINGS_UNAVAILABLE', 'Embeddings are temporarily unavailable. Try keyword search (lexical-only).', 503);
+      return NextResponse.json(body, { status });
+    }
+    // The dynamic pipeline has no static type here; cast to a callable shape we expect.
+    const pipeFn = pipe as (input: string, opts: { pooling: 'mean'; normalize: boolean }) => Promise<{ data: Float32Array }>;
+    const output = await pipeFn(query.trim(), {
       pooling: 'mean' as const,
       normalize: true,
     });
@@ -145,11 +171,14 @@ export async function POST(req: Request) {
     }
 
     // Phase 2 fallback: broaden threshold to almost zero to get top similarities even if low
+    let usedPhase2Fallback = false;
     if ((!results || results.length === 0) && adjustedThreshold > 0.01) {
       logger.info('No semantic hits (phase1); retrying with near-zero threshold', undefined, { previousThreshold: adjustedThreshold });
-      const { data: dataPhase2, error: errorPhase2 } = await supabase.rpc(procName, { ...rpcArgs, match_threshold: 0.01, match_count: Math.max(matchCount, 8) });
+      // Use the requested matchCount rather than forcing 8; forcing can surface unrelated notes and confuse users
+      const { data: dataPhase2, error: errorPhase2 } = await supabase.rpc(procName, { ...rpcArgs, match_threshold: 0.01, match_count: matchCount });
       if (!errorPhase2) {
         results = dataPhase2 || [];
+        usedPhase2Fallback = true;
       } else {
         logger.warn('Phase2 semantic retry failed', undefined, { error: String(errorPhase2) });
       }
@@ -259,23 +288,30 @@ export async function POST(req: Request) {
     }
 
     const totalDuration = Date.now() - startTime;
+
+    // Enforce the requested matchCount server-side: some downstream RPCs may return more items
+    // than requested; trim to the requested count to ensure consistent UI behavior.
+    const finalResults = Array.isArray(results) ? results.slice(0, matchCount) : [];
+
     logger.info('Search completed successfully', undefined, { 
-      resultsCount: results?.length || 0,
+      requestedMatchCount: matchCount,
+      resultsCount: finalResults.length,
       embeddingDuration,
       searchDuration,
       totalDuration,
       phases: {
         phase1Threshold: adjustedThreshold,
-        usedLexicalFallback: (!results || results.length === 0) ? true : false
+        usedPhase2Fallback,
+        usedLexicalFallback
       }
     });
     
     logger.logResponse('POST', '/api/search', 200, totalDuration, { userId });
 
     return NextResponse.json({ 
-      results,
+      results: finalResults,
       query: query,
-      count: results.length,
+      count: finalResults.length,
       mode: usedLexicalFallback ? 'lexical' : 'semantic'
     });
 

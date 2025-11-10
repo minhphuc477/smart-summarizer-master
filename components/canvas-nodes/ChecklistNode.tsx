@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useState } from 'react';
+import { memo, useState, useEffect } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { CheckSquare, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -27,6 +27,19 @@ function ChecklistNode({ data, selected }: NodeProps<ChecklistNodeData>) {
   const [newItemText, setNewItemText] = useState('');
   const [editingTitle, setEditingTitle] = useState(false);
   const [showCompleted, setShowCompleted] = useState(data.showCompleted ?? true);
+
+  // Sync with prop changes when template is loaded
+  useEffect(() => {
+    if (data.title !== undefined && data.title !== title) {
+      setTitle(data.title);
+    }
+  }, [data.title, title]);
+
+  useEffect(() => {
+    if (data.items !== undefined && JSON.stringify(data.items) !== JSON.stringify(items)) {
+      setItems(data.items);
+    }
+  }, [data.items, items]);
 
   const addItem = () => {
     if (!newItemText.trim()) return;

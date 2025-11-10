@@ -121,9 +121,15 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [suggestionsDialogOpen, setSuggestionsDialogOpen] = useState(false);
   const [currentSuggestions, setCurrentSuggestions] = useState<{
-    relatedConcepts: string[];
-    connections: Array<{ from: string; to: string; reason: string }>;
-    nextSteps: string[];
+    relatedConcepts: Array<{
+      title: string;
+      description: string;
+      suggestedPosition: string;
+    }>;
+    suggestedConnections?: Array<{ from: string; to: string; reason: string; label?: string }>;
+    connections?: Array<{ from: string; to: string; reason: string }>;
+    groupings?: Array<{ name: string; nodes: string[]; reason: string }>;
+    nextSteps?: string[];
   } | null>(null);
   const [currentCanvasId, setCurrentCanvasId] = useState(canvasId);
   const [showMinimap, setShowMinimap] = useState(true);
@@ -512,7 +518,7 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
   // Handle loading a template
   const handleLoadTemplate = useCallback((template: { nodes: Node[]; edges: Edge[]; viewport?: { x: number; y: number; zoom: number } }) => {
     pushUndo();
-    // Ensure all template nodes are draggable, selectable, and have proper data structure
+    // Ensure all template nodes are draggable, selectable, connectable AND editable
     const editableNodes = template.nodes.map(node => {
       const baseNode = {
         ...node,
@@ -521,19 +527,34 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
         connectable: true,
       };
       
-      // For stickyNote nodes, ensure data.text exists and editing is enabled
+      // For React Flow default nodes (input, default, output), make their labels editable
+      // by storing label in data.label and ensuring data exists
+      if (!node.type || node.type === 'input' || node.type === 'default' || node.type === 'output') {
+        const label = node.data?.label || (node as { label?: string }).label || 'Click to edit';
+        return {
+          ...baseNode,
+          type: node.type || 'default',
+          data: {
+            ...node.data,
+            label,
+            // Store original for restoration if needed
+            originalLabel: label,
+          }
+        };
+      }
+      
+      // For stickyNote nodes, ensure data.text exists
       if (node.type === 'stickyNote') {
         return {
           ...baseNode,
           data: {
             ...node.data,
             text: node.data.text || node.data.label || 'Edit me',
-            // Don't set editing: false - let the node component handle click/double-click
           }
         };
       }
       
-      // For other node types, preserve their data structure
+      // For other custom node types, preserve their data structure
       return baseNode;
     });
     
@@ -546,6 +567,42 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
     }
     toast.success('Template loaded! Double-click nodes to edit.');
   }, [pushUndo, setNodes, setEdges, fitView]);
+
+  const handleNodeDoubleClick = useCallback((_event: React.MouseEvent, node: Node) => {
+    // For default React Flow nodes (input, default, output), convert to a stickyNote
+    // so users can edit the full note content inline.
+    if (!node.type || node.type === 'input' || node.type === 'default' || node.type === 'output') {
+  const currentLabel = node.data?.label || (node as unknown as { label?: string }).label || '';
+
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.id === node.id) {
+            return {
+              ...n,
+              type: 'stickyNote',
+              data: {
+                // preserve existing data fields and copy label into text
+                ...((n.data as Record<string, unknown>) || {}),
+                text: currentLabel || 'Edit me',
+                editing: true,
+              },
+              // Optional: provide a reasonable default style for sticky notes when converting
+              style: {
+                ...(n.style || {}),
+                backgroundColor: '#fef3c7',
+                border: '2px solid #f59e0b',
+                borderRadius: '8px',
+                padding: '10px',
+              },
+            };
+          }
+          return n;
+        })
+      );
+      // No toast here; the sticky note component will focus into edit mode
+    }
+    // Custom nodes (stickyNote, checklist, code, etc.) handle their own editing internally
+  }, [setNodes]);
 
   const addStickyNote = () => {
     const newNode: Node = {
@@ -815,7 +872,7 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
     }
   };
 
-  const handleAddSuggestedConcept = (concept: string) => {
+  const handleAddSuggestedConcept = (concept: { title: string; description: string; suggestedPosition: string }) => {
     // Add a new node with the suggested concept
     const newNode: Node = {
       id: `node-${Date.now()}`,
@@ -825,7 +882,7 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
         y: Math.random() * 400 + 100,
       },
       data: {
-        text: concept,
+        text: `${concept.title}\n\n${concept.description}`,
         editing: false,
       },
       style: {
@@ -838,7 +895,7 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
       },
     };
     setNodes((nds) => [...nds, newNode]);
-    toast.success(`Added "${concept}" to canvas`);
+    toast.success(`Added "${concept.title}" to canvas`);
   };
 
   const handleAddSuggestedConnection = (connection: { from: string; to: string; reason: string }) => {
@@ -1499,6 +1556,7 @@ function CanvasEditorInner({ canvasId, workspaceId, onSave }: CanvasEditorProps)
                 onNodesChange={handleNodesChange}
                 onEdgesChange={handleEdgesChange}
                 onConnect={onConnect}
+                onNodeDoubleClick={handleNodeDoubleClick}
                 nodeTypes={nodeTypes}
                 nodesDraggable={true}
                 nodesConnectable={true}

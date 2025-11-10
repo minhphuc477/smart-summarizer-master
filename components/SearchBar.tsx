@@ -51,6 +51,8 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
       return [];
     }
   });
+  // Track if embeddings are unavailable to automatically use lexical-only
+  const [embeddingsUnavailable, setEmbeddingsUnavailable] = useState(false);
   // Debounce timer
   const debounceTimer = useRef<NodeJS.Timeout | null>(null);
 
@@ -98,6 +100,8 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
           matchCount: 5,
           // Use current threshold so server filters early
           matchThreshold: Math.max(0.5, Math.min(0.99, minSimilarity)),
+          // Automatically use lexical-only if embeddings are known to be unavailable
+          lexicalOnly: embeddingsUnavailable,
           filters: {
             dateFrom: usedFilters.dateFrom || undefined,
             dateTo: usedFilters.dateTo || undefined,
@@ -110,7 +114,9 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
       if (!response.ok) {
         // If semantic search RPC failed or dimension mismatch, retry with lexical-only fallback
         const code = (data && typeof data.code === 'string') ? data.code : '';
-        if (code === 'SEMANTIC_RPC_FAILED' || code === 'SEMANTIC_DIMENSION_MISMATCH') {
+  if (code === 'SEMANTIC_RPC_FAILED' || code === 'SEMANTIC_DIMENSION_MISMATCH' || code === 'EMBEDDINGS_UNAVAILABLE') {
+          // Mark embeddings as unavailable for future searches
+          setEmbeddingsUnavailable(true);
           try {
             const retryRes = await fetch('/api/search', {
               method: 'POST',
@@ -142,6 +148,10 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
         } else {
           throw new Error(data.error || 'Search failed');
         }
+      } else if (!embeddingsUnavailable) {
+        // If this search succeeded and we weren't already in lexical-only mode,
+        // embeddings are working again
+        setEmbeddingsUnavailable(false);
       }
       // Server already filtered by threshold, so use results directly
       // Only apply client threshold if user manually adjusted slider AFTER search completed
@@ -170,7 +180,7 @@ export default function SearchBar({ userId, folderId = null }: SearchBarProps) {
     } finally {
       setIsSearching(false);
     }
-  }, [userId, folderId, minSimilarity, filters, recentSearches]);
+  }, [userId, folderId, minSimilarity, filters, recentSearches, embeddingsUnavailable]);
 
   // Debounced search-as-you-type
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
