@@ -76,13 +76,46 @@ export async function POST(req: Request) {
       tagsCount: jsonResponse.tags?.length || 0,
       sentiment: jsonResponse.sentiment 
     });
+
+    // Ensure we have at least some basic actions if GROQ didn't generate them
+    let actions = jsonResponse.actions || [];
+    if (!actions || actions.length === 0) {
+      // Generate basic actions from takeaways if none were provided
+      actions = jsonResponse.takeaways.slice(0, 3).map((takeaway: string, _index: number) => ({
+        task: `Follow up on: ${takeaway.substring(0, 100)}${takeaway.length > 100 ? '...' : ''}`,
+        datetime: null
+      }));
+    }
+
+    // Normalize sentiment to ensure it matches database constraint
+    const validSentiments = ['positive', 'neutral', 'negative'];
+    let normalizedSentiment = 'neutral'; // default
+    if (jsonResponse.sentiment && typeof jsonResponse.sentiment === 'string') {
+      const lowerSentiment = jsonResponse.sentiment.toLowerCase().trim();
+      if (validSentiments.includes(lowerSentiment)) {
+        normalizedSentiment = lowerSentiment;
+      } else {
+        // Try to map common variations
+        if (lowerSentiment.includes('pos') || lowerSentiment === 'good') {
+          normalizedSentiment = 'positive';
+        } else if (lowerSentiment.includes('neg') || lowerSentiment === 'bad') {
+          normalizedSentiment = 'negative';
+        }
+        // Otherwise keep as neutral
+      }
+    }
+    
+    logger.info('Sentiment normalization', undefined, { 
+      original: jsonResponse.sentiment, 
+      normalized: normalizedSentiment 
+    });
     
     // Guest mode: chỉ trả về kết quả, không lưu DB
     if (isGuest) {
       logger.info('Guest mode - skipping database save');
       const totalDuration = Date.now() - startTime;
       logger.logResponse('POST', '/api/summarize', 200, totalDuration, { isGuest: true });
-      return NextResponse.json(jsonResponse);
+      return NextResponse.json({ ...jsonResponse, actions, sentiment: normalizedSentiment });
     }
     
     // Logged in mode: Lưu vào database
@@ -102,8 +135,8 @@ export async function POST(req: Request) {
             original_notes: safeNotes,
             summary: jsonResponse.summary,
             takeaways: jsonResponse.takeaways,
-            actions: jsonResponse.actions,
-            sentiment: jsonResponse.sentiment || 'neutral',
+            actions: actions,
+            sentiment: normalizedSentiment,
             folder_id: folderId || null,
             workspace_id: workspaceId || null
           })

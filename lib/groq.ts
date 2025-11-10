@@ -49,12 +49,13 @@ export async function getGroqSummary(notes: string, customPersona: string): Prom
     After adopting the persona, you must provide the output ONLY in a valid JSON format with FIVE keys:
       1. "summary" (string)
       2. "takeaways" (string[])
-      3. "actions" ( { task: string; datetime: string | null }[] )
+      3. "actions" ( { task: string; datetime: string | null }[] - ALWAYS include at least 2-3 actionable items. For PDF documents, create actions like: "Review key findings", "Implement recommendations", "Schedule follow-up discussion", "Apply insights to current projects", "Share with team members", or specific tasks derived from the content. Even informational content should generate actions for application and follow-up.)
       4. "tags" (string[] length 3-5)
-      5. "sentiment" ("positive" | "neutral" | "negative")
+      5. "sentiment" ("positive" | "neutral" | "negative" - choose ONLY one of these three exact values)
     IMPORTANT datetime detection guidance:
       - Convert explicit times/dates mentioned to ISO 8601 with timezone if possible; else null.
       - Use current date reference: ${new Date().toISOString().split('T')[0]}
+      - For action items without explicit dates, set datetime to null
     ${finalPass ? "The input may already be summarized chunks; merge them cohesively, avoid duplication." : ""}
     Do not add any text before or after the JSON object.`;
 

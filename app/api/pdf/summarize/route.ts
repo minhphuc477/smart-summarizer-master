@@ -175,6 +175,44 @@ ${textToSummarize}
     // Call GROQ for summarization
   const summary = await getGroqSummary(documentContext, persona);
 
+    console.log('[PDF Summarize] GROQ summary actions:', summary.actions);
+
+    // Ensure we have at least some basic actions if GROQ didn't generate them
+    let actions = summary.actions || [];
+    if (!actions || actions.length === 0) {
+      console.log('[PDF Summarize] No actions from GROQ, generating fallback actions from takeaways');
+      // Generate basic actions from takeaways if none were provided
+      actions = summary.takeaways.slice(0, 3).map((takeaway: string, _index: number) => ({
+        task: `Follow up on: ${takeaway.substring(0, 100)}${takeaway.length > 100 ? '...' : ''}`,
+        datetime: null
+      }));
+    }
+
+    console.log('[PDF Summarize] Final actions to save:', actions);
+
+    // Normalize sentiment to ensure it matches database constraint
+    const validSentiments = ['positive', 'neutral', 'negative'];
+    let normalizedSentiment = 'neutral'; // default
+    if (summary.sentiment && typeof summary.sentiment === 'string') {
+      const lowerSentiment = summary.sentiment.toLowerCase().trim();
+      if (validSentiments.includes(lowerSentiment)) {
+        normalizedSentiment = lowerSentiment;
+      } else {
+        // Try to map common variations
+        if (lowerSentiment.includes('pos') || lowerSentiment === 'good') {
+          normalizedSentiment = 'positive';
+        } else if (lowerSentiment.includes('neg') || lowerSentiment === 'bad') {
+          normalizedSentiment = 'negative';
+        }
+        // Otherwise keep as neutral
+      }
+    }
+
+    console.log('[PDF Summarize] Sentiment normalization:', { 
+      original: summary.sentiment, 
+      normalized: normalizedSentiment 
+    });
+
     // Create a note with the summary
     const { data: note, error: noteError } = await supabase
       .from('notes')
@@ -186,8 +224,8 @@ ${textToSummarize}
         original_notes: `PDF: ${pdfDoc.original_filename}`,
         summary: summary.summary,
         takeaways: summary.takeaways,
-        actions: summary.actions,
-        sentiment: summary.sentiment,
+        actions: actions,
+        sentiment: normalizedSentiment,
         pdf_document_id: pdfId,
       })
       .select()

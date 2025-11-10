@@ -62,8 +62,9 @@ export async function POST(req: Request) {
     }
 
     // Try write and attempt automatic padding on dimension mismatch
-    // Convert array to vector format: '[0.1, 0.2, ...]' as a string for pgvector
+    // Convert array to PostgreSQL vector string format for pgvector
     const tryUpsert = async (vec: number[]) => {
+      // Use proper pgvector string format: '[0.1,0.2,...]'
       const vectorString = `[${vec.join(',')}]`;
       const { error: upsertErr } = await supabase
         .from('notes')

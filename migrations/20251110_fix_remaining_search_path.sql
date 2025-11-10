@@ -107,9 +107,10 @@ AS $$
 BEGIN
   -- Validate that embedding has the correct dimension (384)
   IF NEW.embedding IS NOT NULL THEN
-    IF array_length(NEW.embedding::float[]::float4[], 1) != 384 THEN
+    -- For vector type, use vector_dims function
+    IF public.vector_dims(NEW.embedding) != 384 THEN
       RAISE EXCEPTION 'Embedding dimension mismatch: expected 384, got %', 
-        array_length(NEW.embedding::float[]::float4[], 1);
+        public.vector_dims(NEW.embedding);
     END IF;
   END IF;
   RETURN NEW;
@@ -139,8 +140,13 @@ SECURITY DEFINER
 SET search_path = ''
 IMMUTABLE
 AS $$
+DECLARE
+  dims integer;
 BEGIN
-  RETURN array_length(v::float[]::float4[], 1);
+  -- Extract dimension from vector string representation
+  -- Vector format is like '[0.1,0.2,...]'
+  SELECT array_length(string_to_array(trim(both '[]' from v::text), ','), 1) INTO dims;
+  RETURN dims;
 END;
 $$;
 
